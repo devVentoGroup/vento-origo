@@ -1,0 +1,97 @@
+@import "tailwindcss";
+
+/* Paleta ORIGO — APP-SHELL-ESTANDARES.md */
+:root {
+  --ui-bg: #ecfff7;
+  --ui-bg-2: #e0fff1;
+  --ui-surface: #ffffff;
+  --ui-surface-2: #d7efe6;
+  --ui-border: #8fb8a9;
+  --ui-text: #0b2a1f;
+  --ui-muted: #8fb8a9;
+  --ui-primary: #0b2a1f;
+  --ui-on-primary: #ffffff;
+  --ui-brand: #10b981;
+  --ui-brand-600: #065f46;
+  --ui-brand-700: #047857;
+  --ui-brand-soft: rgba(16, 185, 129, 0.14);
+  --ui-radius-card: 16px;
+  --ui-radius-control: 12px;
+  --ui-shadow-1: 0 12px 28px rgba(11, 42, 31, 0.08);
+  --ui-shadow-2: 0 22px 64px rgba(11, 42, 31, 0.12);
+  --background: var(--ui-bg);
+  --foreground: var(--ui-text);
+}
+
+body {
+  background: linear-gradient(180deg, var(--ui-bg) 0%, var(--ui-bg-2) 100%);
+  color: var(--foreground);
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+.ui-panel {
+  border: 1px solid var(--ui-border);
+  background: var(--ui-surface);
+  border-radius: var(--ui-radius-card);
+  padding: 24px;
+  box-shadow: var(--ui-shadow-1);
+}
+
+.ui-panel-soft {
+  border: 1px solid var(--ui-border);
+  background: var(--ui-surface-2);
+  border-radius: var(--ui-radius-card);
+  padding: 20px;
+}
+
+.ui-h1 { font-size: 1.75rem; font-weight: 600; color: var(--ui-text); }
+.ui-h2 { font-size: 1.25rem; font-weight: 600; color: var(--ui-text); }
+.ui-h3 { font-size: 1.05rem; font-weight: 600; color: var(--ui-text); }
+.ui-body { font-size: 0.95rem; color: var(--ui-text); }
+.ui-body-muted { font-size: 0.95rem; color: var(--ui-muted); }
+.ui-caption { font-size: 0.8rem; color: var(--ui-muted); }
+.ui-label { font-size: 0.8rem; font-weight: 600; color: var(--ui-muted); }
+
+.ui-input {
+  width: 100%;
+  height: 48px;
+  border-radius: var(--ui-radius-control);
+  border: 1px solid var(--ui-border);
+  padding: 0 16px;
+  font-size: 1rem;
+}
+
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 48px;
+  padding: 0 20px;
+  border-radius: var(--ui-radius-control);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.ui-btn--brand {
+  background: var(--ui-brand);
+  color: var(--ui-on-primary);
+}
+
+.ui-btn--ghost {
+  border: 1px solid var(--ui-border);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+}
+
+.ui-alert {
+  border-radius: var(--ui-radius-card);
+  padding: 16px;
+  border: 1px solid var(--ui-border);
+  background: var(--ui-surface-2);
+}
+
+.ui-empty-state {
+  text-align: center;
+  padding: 48px 24px;
+  color: var(--ui-muted);
+}
