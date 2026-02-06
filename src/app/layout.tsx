@@ -1,20 +1,37 @@
 import type { Metadata } from "next";
-import { OrigoShell } from "@/components/origo-shell";
+import { Geist_Mono, Manrope } from "next/font/google";
 import "./globals.css";
+import { VentoShell } from "@/components/vento/standard/vento-shell";
+
+const manrope = Manrope({
+  variable: "--font-manrope",
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  display: "swap",
+});
+
+const geistMono = Geist_Mono({
+  variable: "--font-geist-mono",
+  subsets: ["latin"],
+});
 
 export const metadata: Metadata = {
   title: "Vento OS · ORIGO",
   description: "Órdenes de compra y proveedores.",
   applicationName: "Vento OS",
+  authors: [{ name: "Vento Group" }],
+  metadataBase: new URL("https://origo.ventogroup.co"),
 };
 
 export default function RootLayout({
   children,
-}: Readonly<{ children: React.ReactNode }>) {
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
   return (
     <html lang="es">
-      <body className="antialiased">
-        <OrigoShell>{children}</OrigoShell>
+      <body className={`${manrope.variable} ${geistMono.variable} antialiased`}>
+        <VentoShell>{children}</VentoShell>
       </body>
     </html>
   );
