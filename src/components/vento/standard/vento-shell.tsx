@@ -7,6 +7,11 @@ type SiteRow = {
   site_type: string | null;
 };
 
+type EmployeeSiteRow = {
+  site_id: string | null;
+  is_primary: boolean | null;
+};
+
 export async function VentoShell({ children }: { children: React.ReactNode }) {
   const supabase = await createClient();
   const { data: userRes } = await supabase.auth.getUser();
@@ -18,12 +23,41 @@ export async function VentoShell({ children }: { children: React.ReactNode }) {
   let activeSiteId = "";
 
   if (user) {
-    displayName = user.user_metadata?.full_name ?? user.email ?? "Usuario";
-    // Cuando ORIGO tenga tabla employees/employee_sites, descomentar y ajustar:
-    // const { data: employeeRow } = await supabase.from("employees").select("role,full_name,alias,site_id").eq("id", user.id).single();
-    // role = employeeRow?.role ?? null;
-    // displayName = employeeRow?.alias ?? employeeRow?.full_name ?? user.email ?? "Usuario";
-    // ... sites desde employee_sites
+    const { data: employeeRow } = await supabase
+      .from("employees")
+      .select("role,full_name,alias,site_id")
+      .eq("id", user.id)
+      .maybeSingle();
+
+    role = employeeRow?.role ?? null;
+    displayName =
+      (employeeRow?.alias ?? employeeRow?.full_name ?? user.email ?? "Usuario") as string;
+
+    const { data: employeeSites } = await supabase
+      .from("employee_sites")
+      .select("site_id,is_primary")
+      .eq("employee_id", user.id)
+      .eq("is_active", true)
+      .order("is_primary", { ascending: false })
+      .limit(50);
+
+    const employeeSiteRows = (employeeSites ?? []) as EmployeeSiteRow[];
+    const defaultSiteId =
+      employeeSiteRows[0]?.site_id ?? (employeeRow as { site_id?: string } | null)?.site_id ?? "";
+    activeSiteId = defaultSiteId ?? "";
+
+    const siteIds = employeeSiteRows
+      .map((row) => row.site_id)
+      .filter((id): id is string => Boolean(id));
+
+    if (siteIds.length) {
+      const { data: siteRows } = await supabase
+        .from("sites")
+        .select("id,name,site_type")
+        .in("id", siteIds)
+        .order("name", { ascending: true });
+      sites = (siteRows ?? []) as SiteRow[];
+    }
   }
 
   return (

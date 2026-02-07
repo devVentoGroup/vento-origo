@@ -1,6 +1,13 @@
 import Link from "next/link";
+import { requireAppAccess } from "@/lib/auth/guard";
 
-export default function OrigoPanelPage() {
+export const dynamic = "force-dynamic";
+
+const APP_ID = "origo";
+const RETURN_TO = "/login";
+
+export default async function OrigoPanelPage() {
+  await requireAppAccess({ appId: APP_ID, returnTo: RETURN_TO });
   return (
     <div className="w-full space-y-6">
       <div>

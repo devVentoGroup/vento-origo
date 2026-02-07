@@ -135,7 +135,7 @@ export function AppSwitcher({ sites = [], activeSiteId = "" }: AppSwitcherProps)
         name: "PULSO",
         description: "POS y ventas.",
         href: "https://pulso.ventogroup.co",
-        status: "soon",
+        status: "active",
         group: "Interno",
       },
       {
