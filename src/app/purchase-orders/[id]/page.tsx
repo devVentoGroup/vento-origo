@@ -1,15 +1,7 @@
 import Link from "next/link";
 
 import { requireAppAccess } from "@/lib/auth/guard";
-import { Button } from "@/components/vento/standard/ui";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeaderCell,
-  TableRow,
-} from "@/components/vento/standard/table";
+import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow } from "@/components/vento/standard/table";
 import { setPurchaseOrderSent } from "../actions";
 import type { PurchaseOrderWithRelations } from "../_lib/types";
 import type { PurchaseOrderItemWithProduct } from "../_lib/types";
@@ -29,6 +21,14 @@ const NEXO_ENTRIES_URL =
   process.env.NEXT_PUBLIC_NEXO_ENTRIES_URL ||
   process.env.NEXT_PUBLIC_NEXO_URL?.replace(/\/$/, "") + "/inventory/entries" ||
   "https://nexo.ventogroup.co/inventory/entries";
+
+function formatMoney(value: number | null | undefined, currency: string | null | undefined): string {
+  if (value == null) return "—";
+  return new Intl.NumberFormat("es-CO", {
+    style: "currency",
+    currency: currency || "COP",
+  }).format(Number(value));
+}
 
 export default async function PurchaseOrderDetailPage({
   params,
@@ -54,12 +54,12 @@ export default async function PurchaseOrderDetailPage({
     return (
       <div className="w-full space-y-6">
         <Link href="/purchase-orders" className="ui-caption text-[var(--ui-brand-600)] hover:underline">
-          ← Órdenes de compra
+          ← Ordenes de compra
         </Link>
         <div className="ui-panel">
           <p className="ui-body-muted">Orden no encontrada o sin acceso.</p>
-          <Link href="/purchase-orders" className="mt-4 inline-block">
-            <Button variant="secondary">Volver al listado</Button>
+          <Link href="/purchase-orders" className="mt-4 inline-block ui-btn ui-btn--ghost">
+            Volver al listado
           </Link>
         </div>
       </div>
@@ -75,88 +75,90 @@ export default async function PurchaseOrderDetailPage({
   const order = po as unknown as PurchaseOrderWithRelations;
   const lineItems = (items ?? []) as unknown as PurchaseOrderItemWithProduct[];
   const isDraft = order.status === "draft";
-  const isSent = order.status === "sent";
-  const canReceiveInNexo = isSent || order.status === "received";
+  const canReceiveInNexo = order.status === "sent" || order.status === "received";
 
   return (
     <div className="w-full space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <Link href="/purchase-orders" className="ui-caption text-[var(--ui-brand-600)] hover:underline">
-            ← Órdenes de compra
-          </Link>
-          <h1 className="mt-2 ui-h1">Orden de compra</h1>
-          <p className="mt-1 font-mono text-sm text-[var(--ui-muted)]">{order.id}</p>
-          <p className="mt-2 text-sm text-[var(--ui-muted)]">
-            Estado: <span className="font-medium text-[var(--ui-text)]">{STATUS_LABELS[order.status] ?? order.status}</span>
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {isDraft && (
-            <>
-              <Link href={`/purchase-orders/${id}/edit`}>
-                <Button type="button" variant="secondary">
+      <section className="ui-panel space-y-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <Link href="/purchase-orders" className="ui-caption text-[var(--ui-brand-600)] hover:underline">
+              ← Ordenes de compra
+            </Link>
+            <h1 className="mt-2 ui-h1">Detalle de orden de compra</h1>
+            <p className="mt-1 font-mono text-sm text-[var(--ui-muted)]">{order.id}</p>
+            <p className="mt-2 ui-body-muted">
+              Estado: <strong>{STATUS_LABELS[order.status] ?? order.status}</strong>
+            </p>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            {isDraft ? (
+              <>
+                <Link href={`/purchase-orders/${id}/edit`} className="ui-btn ui-btn--ghost">
                   Editar
-                </Button>
-              </Link>
-              <form action={setPurchaseOrderSent.bind(null, id)}>
-                <Button type="submit" variant="brand">
-                  Enviar orden
-                </Button>
-              </form>
-            </>
-          )}
-          {canReceiveInNexo && (
-            <a
-              href={`${NEXO_ENTRIES_URL}?purchase_order_id=${encodeURIComponent(id)}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-block"
-            >
-              <Button type="button" variant="secondary">
-                Recibir en Nexo →
-              </Button>
-            </a>
-          )}
+                </Link>
+                <form action={setPurchaseOrderSent.bind(null, id)}>
+                  <button type="submit" className="ui-btn ui-btn--brand">
+                    Enviar orden
+                  </button>
+                </form>
+              </>
+            ) : null}
+            {canReceiveInNexo ? (
+              <a
+                href={`${NEXO_ENTRIES_URL}?purchase_order_id=${encodeURIComponent(id)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="ui-btn ui-btn--ghost"
+              >
+                Recibir en Nexo
+              </a>
+            ) : null}
+          </div>
         </div>
-      </div>
 
-      {errorMsg && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300">
-          {errorMsg === "only_draft_editable"
-            ? "Solo las órdenes en borrador se pueden editar."
-            : decodeURIComponent(errorMsg)}
+        {errorMsg ? (
+          <div className="ui-alert ui-alert--error">
+            {errorMsg === "only_draft_editable"
+              ? "Solo las ordenes en borrador se pueden editar."
+              : decodeURIComponent(errorMsg)}
+          </div>
+        ) : null}
+      </section>
+
+      <section className="ui-panel max-w-3xl space-y-4">
+        <div className="ui-h3">Cabecera</div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="ui-panel-soft p-3">
+            <div className="ui-caption">Proveedor</div>
+            <div className="font-semibold">{(order.suppliers as { name?: string } | null)?.name ?? "—"}</div>
+          </div>
+          <div className="ui-panel-soft p-3">
+            <div className="ui-caption">Sede</div>
+            <div className="font-semibold">{(order.sites as { name?: string } | null)?.name ?? "—"}</div>
+          </div>
+          <div className="ui-panel-soft p-3">
+            <div className="ui-caption">Fecha esperada</div>
+            <div className="font-semibold">
+              {order.expected_at ? new Date(order.expected_at).toLocaleDateString("es") : "—"}
+            </div>
+          </div>
+          <div className="ui-panel-soft p-3">
+            <div className="ui-caption">Total</div>
+            <div className="font-semibold">{formatMoney(order.total_amount, order.currency)}</div>
+          </div>
+          <div className="ui-panel-soft p-3 sm:col-span-2">
+            <div className="ui-caption">Notas</div>
+            <div className="font-semibold">{order.notes || "Sin notas"}</div>
+          </div>
         </div>
-      )}
+      </section>
 
-      <div className="ui-panel max-w-2xl space-y-4">
-        <h2 className="ui-h3">Cabecera</h2>
-        <dl className="grid gap-2 sm:grid-cols-2">
-          <dt className="text-sm text-[var(--ui-muted)]">Proveedor</dt>
-          <dd>{(order.suppliers as { name?: string } | null)?.name ?? "—"}</dd>
-          <dt className="text-sm text-[var(--ui-muted)]">Sede</dt>
-          <dd>{(order.sites as { name?: string } | null)?.name ?? "—"}</dd>
-          <dt className="text-sm text-[var(--ui-muted)]">Fecha esperada</dt>
-          <dd>{order.expected_at ? new Date(order.expected_at).toLocaleDateString("es") : "—"}</dd>
-          <dt className="text-sm text-[var(--ui-muted)]">Total</dt>
-          <dd>
-            {order.total_amount != null
-              ? new Intl.NumberFormat("es-CO", { style: "currency", currency: order.currency || "COP" }).format(Number(order.total_amount))
-              : "—"}
-          </dd>
-          {order.notes && (
-            <>
-              <dt className="text-sm text-[var(--ui-muted)]">Notas</dt>
-              <dd className="sm:col-span-1">{order.notes}</dd>
-            </>
-          )}
-        </dl>
-      </div>
-
-      <div className="ui-panel overflow-x-auto">
-        <h2 className="ui-h3 mb-4">Líneas</h2>
+      <section className="ui-panel overflow-x-auto">
+        <div className="ui-h3 mb-4">Lineas</div>
         {lineItems.length === 0 ? (
-          <p className="ui-body-muted">Sin líneas.</p>
+          <p className="ui-body-muted">Sin lineas registradas.</p>
         ) : (
           <Table>
             <TableHead>
@@ -173,29 +175,23 @@ export default async function PurchaseOrderDetailPage({
               {lineItems.map((item) => (
                 <TableRow key={item.id}>
                   <TableCell>
-                    {(item.products as { name?: string; sku?: string } | null)
-                      ? `${(item.products as { sku?: string }).sku ? (item.products as { sku: string }).sku + " – " : ""}${(item.products as { name?: string }).name ?? ""}`
+                    {(item.products as { sku?: string; name?: string } | null)
+                      ? `${(item.products as { sku?: string }).sku ? `${(item.products as { sku: string }).sku} - ` : ""}${(item.products as { name?: string }).name ?? ""}`
                       : item.product_id}
                   </TableCell>
                   <TableCell className="text-right">{Number(item.quantity_ordered)}</TableCell>
                   <TableCell className="text-right">
                     {item.quantity_received != null ? Number(item.quantity_received) : "—"}
                   </TableCell>
-                  <TableCell className="text-right">
-                    {new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP" }).format(Number(item.unit_cost))}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {item.line_total != null
-                      ? new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP" }).format(Number(item.line_total))
-                      : "—"}
-                  </TableCell>
+                  <TableCell className="text-right">{formatMoney(Number(item.unit_cost), "COP")}</TableCell>
+                  <TableCell className="text-right">{formatMoney(item.line_total, "COP")}</TableCell>
                   <TableCell>{item.unit ?? "—"}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
         )}
-      </div>
+      </section>
     </div>
   );
 }

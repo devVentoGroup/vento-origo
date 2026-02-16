@@ -1,4 +1,5 @@
-import Link from "next/link";
+﻿import Link from "next/link";
+
 import { requireAppAccess } from "@/lib/auth/guard";
 
 export const dynamic = "force-dynamic";
@@ -8,39 +9,45 @@ const RETURN_TO = "/login";
 
 export default async function OrigoPanelPage() {
   await requireAppAccess({ appId: APP_ID, returnTo: RETURN_TO });
+
   return (
     <div className="w-full space-y-6">
-      <div>
+      <section className="ui-panel space-y-3">
         <h1 className="ui-h1">ORIGO</h1>
-        <p className="mt-2 ui-body-muted">
-          Órdenes de compra y gestión de proveedores. Cuando haya inventario real y datos en la aplicación, aquí podrás crear OCs y vincular recepciones con Nexo.
+        <p className="ui-body-muted">
+          Ordenes de compra y gestion de proveedores. Desde aqui controlas compras, borradores,
+          envios y recepcion integrada con Nexo.
         </p>
-      </div>
+      </section>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <Link href="/purchase-orders" className="ui-panel block transition hover:shadow-lg">
-          <div className="ui-h3">Órdenes de compra</div>
-          <p className="mt-1 ui-body-muted">Listado y detalle de OC. Placeholder hasta conectar datos.</p>
-          <span className="mt-3 inline-block text-sm font-semibold text-[var(--ui-brand-600)]">Ir a Órdenes →</span>
+          <div className="ui-h3">Ordenes de compra</div>
+          <p className="mt-1 ui-body-muted">Listado, estado y seguimiento operativo de OCs.</p>
+          <span className="mt-3 inline-block text-sm font-semibold text-[var(--ui-brand-600)]">Ir a ordenes</span>
         </Link>
+
         <Link href="/purchase-orders/new" className="ui-panel block transition hover:shadow-lg">
           <div className="ui-h3">Nueva orden</div>
-          <p className="mt-1 ui-body-muted">Crear orden de compra. Placeholder.</p>
-          <span className="mt-3 inline-block text-sm font-semibold text-[var(--ui-brand-600)]">Nueva OC →</span>
+          <p className="mt-1 ui-body-muted">Crear OC con flujo guiado y validacion previa.</p>
+          <span className="mt-3 inline-block text-sm font-semibold text-[var(--ui-brand-600)]">Crear nueva</span>
         </Link>
+
         <Link href="/suppliers" className="ui-panel block transition hover:shadow-lg">
           <div className="ui-h3">Proveedores</div>
-          <p className="mt-1 ui-body-muted">Catálogo de proveedores. Placeholder.</p>
-          <span className="mt-3 inline-block text-sm font-semibold text-[var(--ui-brand-600)]">Ir a Proveedores →</span>
+          <p className="mt-1 ui-body-muted">Catalogo y ficha de proveedores con formulario estandar.</p>
+          <span className="mt-3 inline-block text-sm font-semibold text-[var(--ui-brand-600)]">Ir a proveedores</span>
         </Link>
-      </div>
+      </section>
 
-      <div className="ui-panel-soft">
+      <section className="ui-panel-soft">
         <div className="ui-caption font-semibold text-[var(--ui-muted)]">Estado</div>
         <p className="mt-2 ui-body-muted">
-          App en modo placeholder. Conectar auth (Vento OS) y modelo de datos de OC cuando el inventario esté disponible; entonces Nexo podrá referenciar órdenes de compra en las entradas.
+          Modulo estandarizado con Vento OS. Las ordenes enviadas se pueden recibir en Nexo para
+          continuar el flujo de entradas y conciliacion.
         </p>
-      </div>
+      </section>
     </div>
   );
 }
+

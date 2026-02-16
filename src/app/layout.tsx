@@ -1,7 +1,8 @@
-import type { Metadata } from "next";
+﻿import type { Metadata } from "next";
 import { Geist_Mono, Manrope } from "next/font/google";
-import "./globals.css";
+
 import { VentoShell } from "@/components/vento/standard/vento-shell";
+import "./globals.css";
 
 const manrope = Manrope({
   variable: "--font-manrope",
@@ -16,8 +17,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Vento OS · ORIGO",
-  description: "Órdenes de compra y proveedores.",
+  title: "Vento OS - ORIGO",
+  description: "Ordenes de compra y proveedores.",
   applicationName: "Vento OS",
   authors: [{ name: "Vento Group" }],
   metadataBase: new URL("https://origo.ventogroup.co"),
@@ -37,3 +38,4 @@ export default function RootLayout({
     </html>
   );
 }
+

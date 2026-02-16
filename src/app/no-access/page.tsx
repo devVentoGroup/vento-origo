@@ -1,4 +1,4 @@
-import Link from "next/link";
+﻿import Link from "next/link";
 
 type SearchParams = { returnTo?: string; reason?: string; permission?: string };
 
@@ -23,11 +23,11 @@ export default async function NoAccessPage({
 
   return (
     <div className="mx-auto w-full max-w-2xl px-6 py-16">
-      <div className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm">
+      <div className="ui-panel">
         <div className="ui-caption">Vento OS · ORIGO</div>
         <h1 className="mt-2 ui-h1">No tienes permisos</h1>
         <p className="mt-2 ui-body-muted">
-          Tu usuario está autenticado, pero no tiene acceso a este módulo o a la acción solicitada.
+          Tu usuario esta autenticado, pero no tiene acceso a este modulo o a la accion solicitada.
         </p>
 
         {returnTo ? (
@@ -42,11 +42,11 @@ export default async function NoAccessPage({
           </div>
         ) : null}
 
-        {reason === "role_override" && (
-          <p className="mt-2 text-sm text-amber-700">
-            El rol de prueba que seleccionaste no tiene este permiso.
-          </p>
-        )}
+        {reason === "role_override" ? (
+          <div className="mt-2 ui-alert ui-alert--warn">
+            El rol de prueba seleccionado no tiene este permiso.
+          </div>
+        ) : null}
 
         <div className="mt-6 flex flex-col gap-2 sm:flex-row">
           <a href={HUB_URL} className="ui-btn ui-btn--brand">
@@ -60,3 +60,4 @@ export default async function NoAccessPage({
     </div>
   );
 }
+
