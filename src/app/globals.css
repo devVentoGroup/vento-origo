@@ -11,10 +11,10 @@
   --ui-primary: #1F2937;
   --ui-primary-hover: #111827;
   --ui-on-primary: #FFFFFF;
-  --ui-brand: #F59E0B;
-  --ui-brand-600: #92400E;
-  --ui-brand-700: #7C2D12;
-  --ui-brand-soft: rgba(245, 158, 11, 0.14);
+  --ui-brand: #10B981;
+  --ui-brand-600: #047857;
+  --ui-brand-700: #065F46;
+  --ui-brand-soft: rgba(16, 185, 129, 0.14);
   --ui-success: #16A34A;
   --ui-success-soft: rgba(22, 163, 74, 0.12);
   --ui-danger: #DC2626;
@@ -25,7 +25,7 @@
   --ui-shadow-1: 0 12px 28px rgba(15, 23, 42, 0.10);
   --ui-shadow-2: 0 22px 64px rgba(15, 23, 42, 0.16);
   --ui-shadow-soft: 0 1px 0 rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.08);
-  --ui-glow: 0 0 0 1px rgba(245, 158, 11, 0.08), 0 16px 40px rgba(245, 158, 11, 0.12);
+  --ui-glow: 0 0 0 1px rgba(16, 185, 129, 0.08), 0 16px 40px rgba(16, 185, 129, 0.12);
 
   --background: var(--ui-bg);
   --foreground: var(--ui-text);
@@ -41,7 +41,7 @@
 body {
   background:
     radial-gradient(1100px 620px at 0% -20%, rgba(248, 250, 252, 0.95) 0%, rgba(248, 250, 252, 0) 60%),
-    radial-gradient(900px 620px at 100% 0%, rgba(255, 246, 225, 0.32) 0%, rgba(255, 246, 225, 0) 60%),
+    radial-gradient(900px 620px at 100% 0%, rgba(220, 252, 231, 0.24) 0%, rgba(220, 252, 231, 0) 60%),
     linear-gradient(180deg, var(--ui-bg) 0%, var(--ui-bg-2) 100%);
   color: var(--foreground);
   font-family: var(--font-manrope, Arial, Helvetica, sans-serif);
@@ -74,7 +74,7 @@ body {
 .ui-panel--halo {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(247, 248, 250, 0.95) 100%);
   box-shadow: var(--ui-shadow-2), var(--ui-glow);
-  border-color: rgba(245, 158, 11, 0.18);
+  border-color: rgba(16, 185, 129, 0.18);
 }
 
 .ui-panel-soft {
@@ -115,7 +115,7 @@ body {
 .ui-chip--brand {
   background: var(--ui-brand-soft);
   color: var(--ui-brand-600);
-  border-color: rgba(245, 158, 11, 0.25);
+  border-color: rgba(16, 185, 129, 0.25);
 }
 
 .ui-chip--success {
@@ -125,9 +125,9 @@ body {
 }
 
 .ui-chip--warn {
-  background: rgba(245, 158, 11, 0.12);
+  background: rgba(16, 185, 129, 0.12);
   color: var(--ui-brand-700);
-  border-color: rgba(245, 158, 11, 0.22);
+  border-color: rgba(16, 185, 129, 0.22);
 }
 
 .ui-title {
@@ -210,7 +210,7 @@ body {
 }
 
 .ui-input:focus {
-  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.22);
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.22);
 }
 
 .ui-btn {
@@ -433,11 +433,11 @@ body {
 @keyframes vento-line-glow {
   0%,
   100% {
-    filter: drop-shadow(0 0 6px rgba(245, 158, 11, 0.45));
+    filter: drop-shadow(0 0 6px rgba(16, 185, 129, 0.45));
     opacity: 0.9;
   }
   50% {
-    filter: drop-shadow(0 0 14px rgba(245, 158, 11, 0.85));
+    filter: drop-shadow(0 0 14px rgba(16, 185, 129, 0.85));
     opacity: 1;
   }
 }
