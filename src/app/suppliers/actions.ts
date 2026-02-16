@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
+import { requireCanManageSuppliers } from "@/lib/suppliers";
 import { createClient } from "@/lib/supabase/server";
 
 export async function createSupplier(formData: FormData) {
@@ -62,4 +63,40 @@ export async function updateSupplier(id: string, formData: FormData) {
   revalidatePath("/suppliers");
   revalidatePath(`/suppliers/${id}/edit`);
   redirect("/suppliers");
+}
+
+export async function deleteSupplier(formData: FormData) {
+  const supplierId = String(formData.get("supplier_id") ?? "").trim();
+  if (!supplierId) {
+    redirect("/suppliers?error=invalid_supplier");
+  }
+
+  const supabase = await createClient();
+  const { data: authRes } = await supabase.auth.getUser();
+  const user = authRes.user ?? null;
+  if (!user) {
+    redirect("/login");
+  }
+  await requireCanManageSuppliers(supabase, user.id);
+
+  const { count: linkedOrders, error: linkedOrdersError } = await supabase
+    .from("purchase_orders")
+    .select("id", { head: true, count: "exact" })
+    .eq("supplier_id", supplierId);
+
+  if (linkedOrdersError) {
+    redirect(`/suppliers?error=${encodeURIComponent(linkedOrdersError.message)}`);
+  }
+
+  if ((linkedOrders ?? 0) > 0) {
+    redirect("/suppliers?error=supplier_has_orders");
+  }
+
+  const { error } = await supabase.from("suppliers").delete().eq("id", supplierId);
+  if (error) {
+    redirect(`/suppliers?error=${encodeURIComponent(error.message)}`);
+  }
+
+  revalidatePath("/suppliers");
+  redirect("/suppliers?ok=supplier_deleted");
 }

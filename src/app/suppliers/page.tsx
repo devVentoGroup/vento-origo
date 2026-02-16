@@ -1,8 +1,16 @@
-import Link from "next/link";
+﻿import Link from "next/link";
 
+import { deleteSupplier } from "@/app/suppliers/actions";
 import { requireAppAccess } from "@/lib/auth/guard";
 import { ROLES_CAN_MANAGE_SUPPLIERS } from "@/lib/suppliers";
-import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow } from "@/components/vento/standard/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeaderCell,
+  TableRow,
+} from "@/components/vento/standard/table";
 
 export const dynamic = "force-dynamic";
 
@@ -23,7 +31,7 @@ export type SupplierRow = {
   updated_at: string | null;
 };
 
-type SearchParams = { q?: string; active?: string; error?: string };
+type SearchParams = { q?: string; active?: string; error?: string; ok?: string };
 
 export default async function SuppliersListPage({
   searchParams,
@@ -45,7 +53,8 @@ export default async function SuppliersListPage({
   const sp = (await searchParams) ?? {};
   const q = String(sp.q ?? "").trim().toLowerCase();
   const activeFilter = sp.active === "false" ? false : sp.active === "true" ? true : null;
-  const errorParam = sp.error;
+  const errorParam = sp.error ?? "";
+  const okParam = sp.ok ?? "";
 
   let query = supabase
     .from("suppliers")
@@ -98,8 +107,22 @@ export default async function SuppliersListPage({
 
         {errorParam === "no_permission" ? (
           <div className="ui-alert ui-alert--warn">
-            Solo propietarios y gerentes pueden crear o editar proveedores.
+            Solo propietarios y gerentes pueden crear, editar o eliminar proveedores.
           </div>
+        ) : null}
+
+        {errorParam === "supplier_has_orders" ? (
+          <div className="ui-alert ui-alert--warn">
+            No se puede eliminar el proveedor porque tiene ordenes de compra asociadas.
+          </div>
+        ) : null}
+
+        {errorParam === "invalid_supplier" ? (
+          <div className="ui-alert ui-alert--error">Proveedor invalido para eliminar.</div>
+        ) : null}
+
+        {okParam === "supplier_deleted" ? (
+          <div className="ui-alert ui-alert--success">Proveedor eliminado correctamente.</div>
         ) : null}
 
         <form method="get" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -168,9 +191,9 @@ export default async function SuppliersListPage({
                       <span className="ml-2 text-sm text-[var(--ui-muted)]">NIT {row.tax_id}</span>
                     ) : null}
                   </TableCell>
-                  <TableCell>{row.contact_name ?? "—"}</TableCell>
-                  <TableCell>{row.phone ?? "—"}</TableCell>
-                  <TableCell>{row.email ?? "—"}</TableCell>
+                  <TableCell>{row.contact_name ?? "-"}</TableCell>
+                  <TableCell>{row.phone ?? "-"}</TableCell>
+                  <TableCell>{row.email ?? "-"}</TableCell>
                   <TableCell>
                     <span className={row.is_active ? "ui-chip ui-chip--success" : "ui-chip"}>
                       {row.is_active ? "Activo" : "Inactivo"}
@@ -178,11 +201,22 @@ export default async function SuppliersListPage({
                   </TableCell>
                   <TableCell className="text-right">
                     {canManageSuppliers ? (
-                      <Link href={`/suppliers/${row.id}/edit`} className="ui-btn ui-btn--ghost ui-btn--sm">
-                        Editar
-                      </Link>
+                      <div className="flex justify-end gap-2">
+                        <Link href={`/suppliers/${row.id}/edit`} className="ui-btn ui-btn--ghost ui-btn--sm">
+                          Editar
+                        </Link>
+                        <form action={deleteSupplier}>
+                          <input type="hidden" name="supplier_id" value={row.id} />
+                          <button
+                            type="submit"
+                            className="ui-btn ui-btn--ghost ui-btn--sm border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
+                          >
+                            Eliminar
+                          </button>
+                        </form>
+                      </div>
                     ) : (
-                      "—"
+                      "-"
                     )}
                   </TableCell>
                 </TableRow>
