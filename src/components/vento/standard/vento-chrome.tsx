@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
@@ -37,7 +37,7 @@ type VentoChromeProps = {
 
 const APP_ENTITY = (process.env.NEXT_PUBLIC_VENTO_ENTITY?.toLowerCase() as "origo" | string) ?? "origo";
 const APP_NAME = process.env.NEXT_PUBLIC_VENTO_APP_NAME ?? "ORIGO";
-const APP_TAGLINE = process.env.NEXT_PUBLIC_VENTO_APP_TAGLINE ?? "Órdenes de compra y proveedores";
+const APP_TAGLINE = process.env.NEXT_PUBLIC_VENTO_APP_TAGLINE ?? "Ã“rdenes de compra y proveedores";
 
 const NAV_GROUPS: NavGroup[] = [
   {
@@ -49,8 +49,9 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: "Compras",
     items: [
-      { href: "/purchase-orders", label: "Órdenes de compra", description: "Listado y seguimiento", icon: "package" },
+      { href: "/purchase-orders", label: "Ã“rdenes de compra", description: "Listado y seguimiento", icon: "package" },
       { href: "/purchase-orders/new", label: "Nueva orden", description: "Crear orden de compra", icon: "package" },
+      { href: "/receipts", label: "Recepciones", description: "Entradas y cierre de OC", icon: "package" },
       { href: "/suppliers", label: "Proveedores", description: "Maestro de proveedores", icon: "users" },
     ],
   },
@@ -164,7 +165,7 @@ export function VentoChrome({
             <VentoLogo
               entity="origo"
               title="Vento OS"
-              subtitle={`${APP_NAME} · Compras`}
+              subtitle={`${APP_NAME} Â· Compras`}
             />
             <button
               type="button"
@@ -214,7 +215,7 @@ export function VentoChrome({
                   onClick={() => setMenuOpen(true)}
                   className="inline-flex items-center rounded-xl border border-[var(--ui-border)] bg-[var(--ui-surface)] h-12 px-4 text-base font-semibold text-[var(--ui-text)] hover:bg-[var(--ui-surface-2)] lg:hidden"
                 >
-                  Menú
+                  MenÃº
                 </button>
                 <div className="hidden sm:flex items-center gap-3">
                   <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--ui-surface-2)] ring-1 ring-inset ring-[var(--ui-border)]">
@@ -240,3 +241,4 @@ export function VentoChrome({
     </div>
   );
 }
+

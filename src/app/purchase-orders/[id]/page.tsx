@@ -1,10 +1,19 @@
 import Link from "next/link";
 
+import { CopyPoMessageButton } from "@/components/vento/purchase-orders/copy-po-message-button";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeaderCell,
+  TableRow,
+} from "@/components/vento/standard/table";
 import { requireAppAccess } from "@/lib/auth/guard";
-import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow } from "@/components/vento/standard/table";
+import { buildPurchaseOrderMessage } from "@/lib/purchase-orders/message-template";
+
 import { setPurchaseOrderSent } from "../actions";
-import type { PurchaseOrderWithRelations } from "../_lib/types";
-import type { PurchaseOrderItemWithProduct } from "../_lib/types";
+import type { PurchaseOrderItemWithProduct, PurchaseOrderWithRelations } from "../_lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -17,13 +26,15 @@ const STATUS_LABELS: Record<string, string> = {
   received: "Recibida",
 };
 
-const NEXO_ENTRIES_URL =
-  process.env.NEXT_PUBLIC_NEXO_ENTRIES_URL ||
-  process.env.NEXT_PUBLIC_NEXO_URL?.replace(/\/$/, "") + "/inventory/entries" ||
-  "https://nexo.ventogroup.co/inventory/entries";
+const ORIGO_RECEIPTS_URL =
+  process.env.NEXT_PUBLIC_ORIGO_RECEIPTS_URL ||
+  `${process.env.NEXT_PUBLIC_ORIGO_URL?.replace(/\/$/, "") || "https://origo.ventogroup.co"}/receipts/new`;
+
+const ORIGO_BASE_URL =
+  process.env.NEXT_PUBLIC_ORIGO_URL?.replace(/\/$/, "") || "https://origo.ventogroup.co";
 
 function formatMoney(value: number | null | undefined, currency: string | null | undefined): string {
-  if (value == null) return "—";
+  if (value == null) return "-";
   return new Intl.NumberFormat("es-CO", {
     style: "currency",
     currency: currency || "COP",
@@ -54,7 +65,7 @@ export default async function PurchaseOrderDetailPage({
     return (
       <div className="w-full space-y-6">
         <Link href="/purchase-orders" className="ui-caption text-[var(--ui-brand-600)] hover:underline">
-          ← Ordenes de compra
+          {"<-"} Ordenes de compra
         </Link>
         <div className="ui-panel">
           <p className="ui-body-muted">Orden no encontrada o sin acceso.</p>
@@ -75,7 +86,25 @@ export default async function PurchaseOrderDetailPage({
   const order = po as unknown as PurchaseOrderWithRelations;
   const lineItems = (items ?? []) as unknown as PurchaseOrderItemWithProduct[];
   const isDraft = order.status === "draft";
-  const canReceiveInNexo = order.status === "sent" || order.status === "received";
+  const canReceiveInOrigo = order.status === "sent" || order.status === "received";
+
+  const supplierName = (order.suppliers as { name?: string } | null)?.name ?? "Proveedor";
+  const siteName = (order.sites as { name?: string } | null)?.name ?? "Sede";
+
+  const receiveInOrigoHref = new URL(ORIGO_RECEIPTS_URL);
+  receiveInOrigoHref.searchParams.set("purchase_order_id", String(order.id));
+
+  const pdfPath = `/purchase-orders/${encodeURIComponent(order.id)}/pdf`;
+  const pdfUrl = `${ORIGO_BASE_URL}${pdfPath}`;
+  const messageToSupplier = buildPurchaseOrderMessage({
+    orderId: order.id,
+    supplierName,
+    siteName,
+    expectedAt: order.expected_at,
+    totalAmount: order.total_amount,
+    currency: order.currency,
+    pdfUrl,
+  });
 
   return (
     <div className="w-full space-y-6">
@@ -83,7 +112,7 @@ export default async function PurchaseOrderDetailPage({
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <Link href="/purchase-orders" className="ui-caption text-[var(--ui-brand-600)] hover:underline">
-              ← Ordenes de compra
+              {"<-"} Ordenes de compra
             </Link>
             <h1 className="mt-2 ui-h1">Detalle de orden de compra</h1>
             <p className="mt-1 font-mono text-sm text-[var(--ui-muted)]">{order.id}</p>
@@ -105,14 +134,21 @@ export default async function PurchaseOrderDetailPage({
                 </form>
               </>
             ) : null}
-            {canReceiveInNexo ? (
+
+            <a href={pdfPath} target="_blank" rel="noopener noreferrer" className="ui-btn ui-btn--ghost">
+              Descargar PDF OC
+            </a>
+
+            <CopyPoMessageButton message={messageToSupplier} />
+
+            {canReceiveInOrigo ? (
               <a
-                href={`${NEXO_ENTRIES_URL}?purchase_order_id=${encodeURIComponent(id)}`}
+                href={receiveInOrigoHref.toString()}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="ui-btn ui-btn--ghost"
               >
-                Recibir en Nexo
+                Recibir en Origo
               </a>
             ) : null}
           </div>
@@ -132,16 +168,16 @@ export default async function PurchaseOrderDetailPage({
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="ui-panel-soft p-3">
             <div className="ui-caption">Proveedor</div>
-            <div className="font-semibold">{(order.suppliers as { name?: string } | null)?.name ?? "—"}</div>
+            <div className="font-semibold">{supplierName}</div>
           </div>
           <div className="ui-panel-soft p-3">
             <div className="ui-caption">Sede</div>
-            <div className="font-semibold">{(order.sites as { name?: string } | null)?.name ?? "—"}</div>
+            <div className="font-semibold">{siteName}</div>
           </div>
           <div className="ui-panel-soft p-3">
             <div className="ui-caption">Fecha esperada</div>
             <div className="font-semibold">
-              {order.expected_at ? new Date(order.expected_at).toLocaleDateString("es") : "—"}
+              {order.expected_at ? new Date(order.expected_at).toLocaleDateString("es-CO") : "-"}
             </div>
           </div>
           <div className="ui-panel-soft p-3">
@@ -172,22 +208,25 @@ export default async function PurchaseOrderDetailPage({
               </TableRow>
             </TableHead>
             <TableBody>
-              {lineItems.map((item) => (
-                <TableRow key={item.id}>
-                  <TableCell>
-                    {(item.products as { sku?: string; name?: string } | null)
-                      ? `${(item.products as { sku?: string }).sku ? `${(item.products as { sku: string }).sku} - ` : ""}${(item.products as { name?: string }).name ?? ""}`
-                      : item.product_id}
-                  </TableCell>
-                  <TableCell className="text-right">{Number(item.quantity_ordered)}</TableCell>
-                  <TableCell className="text-right">
-                    {item.quantity_received != null ? Number(item.quantity_received) : "—"}
-                  </TableCell>
-                  <TableCell className="text-right">{formatMoney(Number(item.unit_cost), "COP")}</TableCell>
-                  <TableCell className="text-right">{formatMoney(item.line_total, "COP")}</TableCell>
-                  <TableCell>{item.unit ?? "—"}</TableCell>
-                </TableRow>
-              ))}
+              {lineItems.map((item) => {
+                const product = item.products as { sku?: string | null; name?: string | null } | null;
+                const productLabel = product
+                  ? `${product.sku ? `${product.sku} - ` : ""}${product.name ?? ""}`
+                  : item.product_id;
+
+                return (
+                  <TableRow key={item.id}>
+                    <TableCell>{productLabel}</TableCell>
+                    <TableCell className="text-right">{Number(item.quantity_ordered)}</TableCell>
+                    <TableCell className="text-right">
+                      {item.quantity_received != null ? Number(item.quantity_received) : "-"}
+                    </TableCell>
+                    <TableCell className="text-right">{formatMoney(Number(item.unit_cost), "COP")}</TableCell>
+                    <TableCell className="text-right">{formatMoney(item.line_total, "COP")}</TableCell>
+                    <TableCell>{item.unit ?? "-"}</TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         )}

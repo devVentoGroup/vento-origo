@@ -13,7 +13,7 @@ const RETURN_TO = "/login";
 export default async function NewPurchaseOrderPage({
   searchParams,
 }: {
-  searchParams?: Promise<{ error?: string }>;
+  searchParams?: Promise<{ error?: string; prefill?: string }>;
 }) {
   const { supabase, user } = await requireAppAccess({ appId: APP_ID, returnTo: RETURN_TO });
 
@@ -33,6 +33,47 @@ export default async function NewPurchaseOrderPage({
 
   const sp = (await searchParams) ?? {};
   const errorMsg = sp.error;
+  let prefillDefaults:
+    | {
+        supplier_id?: string;
+        site_id?: string;
+        expected_at?: string;
+        notes?: string | null;
+        lines?: Array<{
+          product_id?: string;
+          quantity?: number | null;
+          unit_cost?: number | null;
+          unit?: string | null;
+        }>;
+      }
+    | undefined;
+
+  if (sp.prefill) {
+    try {
+      const raw = Buffer.from(String(sp.prefill), "base64url").toString("utf-8");
+      const parsed = JSON.parse(raw) as {
+        supplier_id?: string;
+        site_id?: string;
+        expected_at?: string;
+        notes?: string | null;
+        lines?: Array<{
+          product_id?: string;
+          quantity?: number | null;
+          unit_cost?: number | null;
+          unit?: string | null;
+        }>;
+      };
+      prefillDefaults = {
+        supplier_id: parsed.supplier_id,
+        site_id: parsed.site_id,
+        expected_at: parsed.expected_at,
+        notes: parsed.notes ?? null,
+        lines: Array.isArray(parsed.lines) ? parsed.lines.slice(0, 30) : [],
+      };
+    } catch {
+      // ignore malformed prefill payload
+    }
+  }
 
   return (
     <div className="w-full space-y-6">
@@ -61,6 +102,8 @@ export default async function NewPurchaseOrderPage({
         suppliers={suppliers}
         sites={sites}
         products={products}
+        maxLines={30}
+        defaultValues={prefillDefaults}
       />
     </div>
   );
