@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
+import { ReceiptForm } from "@/components/vento/receipts/receipt-form";
 import { requireAppAccess } from "@/lib/auth/guard";
+import { formatPurchaseOrderRef } from "@/lib/purchase-orders/reference";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -50,7 +52,10 @@ type PurchaseOrderRow = {
   id: string;
   supplier_id: string | null;
   site_id: string | null;
+  status: string | null;
+  created_at: string | null;
   notes: string | null;
+  suppliers?: { name?: string | null } | { name?: string | null }[] | null;
 };
 
 type PurchaseOrderItemRow = {
@@ -560,7 +565,10 @@ export default async function ReceiptsPage({
     const purchaseOrder = poRow as PurchaseOrderRow | null;
     if (purchaseOrder?.site_id === siteId) {
       prefillSupplierId = String(purchaseOrder.supplier_id ?? "");
-      prefillInvoiceNumber = String(purchaseOrder.id ?? "");
+      prefillInvoiceNumber = formatPurchaseOrderRef({
+        id: String(purchaseOrder.id ?? ""),
+        createdAt: purchaseOrder.created_at,
+      });
       prefillNotes = String(purchaseOrder.notes ?? "");
 
       const { data: poItemsData } = await supabase
@@ -586,8 +594,14 @@ export default async function ReceiptsPage({
     }
   }
 
-  const rowCount = Math.max(5, prefillRows.length || 0);
-  const rows = Array.from({ length: rowCount }, (_, index) => prefillRows[index] ?? null);
+  const { data: purchaseOrdersData } = await supabase
+    .from("purchase_orders")
+    .select("id,status,created_at,suppliers(name)")
+    .eq("site_id", siteId)
+    .in("status", ["draft", "sent", "received"])
+    .order("created_at", { ascending: false })
+    .limit(200);
+  const purchaseOrders = (purchaseOrdersData ?? []) as PurchaseOrderRow[];
 
   let entriesQuery = await supabase
     .from("inventory_entries")
@@ -624,118 +638,24 @@ export default async function ReceiptsPage({
         {okMsg ? <div className="ui-alert ui-alert--success">Recepcion registrada correctamente.</div> : null}
       </div>
 
-      <form action={createReceipt} className="ui-panel space-y-4">
-        <input type="hidden" name="site_id" value={siteId} />
-        <input type="hidden" name="purchase_order_id" value={purchaseOrderId} />
-        <div className="grid gap-3 md:grid-cols-3">
-          <label className="flex flex-col gap-1">
-            <span className="ui-label">Proveedor</span>
-            <select name="supplier_id" className="ui-input" defaultValue={prefillSupplierId} required>
-              <option value="">Seleccionar</option>
-              {suppliers.map((supplier) => (
-                <option key={supplier.id} value={supplier.id}>
-                  {supplier.name ?? supplier.id}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="ui-label">Factura / referencia</span>
-            <input
-              name="invoice_number"
-              className="ui-input"
-              placeholder="FAC-0001"
-              defaultValue={prefillInvoiceNumber}
-            />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="ui-label">Fecha recepcion</span>
-            <input type="date" name="received_at" className="ui-input" />
-          </label>
-        </div>
-        <label className="flex flex-col gap-1">
-          <span className="ui-label">Notas</span>
-          <input name="notes" className="ui-input" placeholder="Observaciones de recepcion" defaultValue={prefillNotes} />
-        </label>
-
-        <div className="overflow-x-auto">
-          <table className="ui-table min-w-[980px] text-sm">
-            <thead className="text-left text-[var(--ui-muted)]">
-              <tr>
-                <th className="py-2 pr-3">Producto</th>
-                <th className="py-2 pr-3">LOC destino</th>
-                <th className="py-2 pr-3">Cantidad recibida</th>
-                <th className="py-2 pr-3">Costo unitario</th>
-                <th className="py-2 pr-3">Notas item</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, index) => (
-                <tr key={index} className="border-t border-zinc-200/60">
-                  <td className="py-2 pr-3">
-                    <select name="item_product_id" className="ui-input" defaultValue={row?.productId ?? ""}>
-                      <option value="">Seleccionar</option>
-                      {products.map((product) => (
-                        <option key={product.id} value={product.id}>
-                          {product.name ?? product.id}
-                        </option>
-                      ))}
-                    </select>
-                    <input
-                      type="hidden"
-                      name="item_purchase_order_item_id"
-                      value={row?.purchaseOrderItemId ?? ""}
-                    />
-                  </td>
-                  <td className="py-2 pr-3">
-                    <select
-                      name="item_location_id"
-                      className="ui-input"
-                      defaultValue={locations[0]?.id ?? ""}
-                    >
-                      <option value="">Seleccionar</option>
-                      {locations.map((location) => (
-                        <option key={location.id} value={location.id}>
-                          {location.code ?? location.description ?? location.id}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-                  <td className="py-2 pr-3">
-                    <input
-                      name="item_quantity_received"
-                      className="ui-input"
-                      type="number"
-                      step="0.000001"
-                      min="0"
-                      defaultValue={row?.quantity ?? ""}
-                    />
-                  </td>
-                  <td className="py-2 pr-3">
-                    <input
-                      name="item_unit_cost"
-                      className="ui-input"
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      defaultValue={row?.unitCost ?? ""}
-                    />
-                  </td>
-                  <td className="py-2 pr-3">
-                    <input name="item_notes" className="ui-input" placeholder="Opcional" />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="flex justify-end">
-          <button type="submit" className="ui-btn ui-btn--brand">
-            Registrar recepcion
-          </button>
-        </div>
-      </form>
+      <ReceiptForm
+        action={createReceipt}
+        siteId={siteId}
+        suppliers={suppliers}
+        products={products}
+        locations={locations}
+        purchaseOrders={purchaseOrders.map((po) => ({
+          id: po.id,
+          created_at: po.created_at,
+          status: po.status,
+          suppliers: Array.isArray(po.suppliers) ? po.suppliers[0] ?? null : po.suppliers ?? null,
+        }))}
+        selectedPurchaseOrderId={purchaseOrderId}
+        prefillSupplierId={prefillSupplierId}
+        prefillInvoiceNumber={prefillInvoiceNumber}
+        prefillNotes={prefillNotes}
+        prefillRows={prefillRows}
+      />
 
       <div className="ui-panel">
         <div className="ui-h3">Recepciones recientes</div>

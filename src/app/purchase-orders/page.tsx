@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { requireAppAccess } from "@/lib/auth/guard";
+import { formatPurchaseOrderRef } from "@/lib/purchase-orders/reference";
 import { normalizeSitesFromEmployeeSites, type EmployeeSiteRow } from "@/lib/supabase/employee-sites";
 import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow } from "@/components/vento/standard/table";
 import type { PurchaseOrderWithRelations } from "./_lib/types";
@@ -135,7 +136,9 @@ export default async function PurchaseOrdersListPage({
               {orders.map((po) => (
                 <TableRow key={po.id}>
                   <TableCell>
-                    <span className="font-mono text-sm">{po.id.slice(0, 8)}...</span>
+                    <span className="font-mono text-sm">
+                      {formatPurchaseOrderRef({ id: po.id, createdAt: po.created_at })}
+                    </span>
                   </TableCell>
                   <TableCell>{(po.suppliers as { name?: string } | null)?.name ?? "—"}</TableCell>
                   <TableCell>{(po.sites as { name?: string } | null)?.name ?? "—"}</TableCell>

@@ -68,7 +68,7 @@ export default async function NewPurchaseOrderPage({
         site_id: parsed.site_id,
         expected_at: parsed.expected_at,
         notes: parsed.notes ?? null,
-        lines: Array.isArray(parsed.lines) ? parsed.lines.slice(0, 30) : [],
+        lines: Array.isArray(parsed.lines) ? parsed.lines : [],
       };
     } catch {
       // ignore malformed prefill payload
@@ -102,7 +102,6 @@ export default async function NewPurchaseOrderPage({
         suppliers={suppliers}
         sites={sites}
         products={products}
-        maxLines={30}
         defaultValues={prefillDefaults}
       />
     </div>

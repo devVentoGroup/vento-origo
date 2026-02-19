@@ -43,14 +43,22 @@ export async function createPurchaseOrder(formData: FormData) {
     redirect(`/purchase-orders/new?error=${encodeURIComponent(poError?.message ?? "Error al crear")}`);
   }
 
+  const productIds = formData.getAll("item_product_id").map((v) => String(v).trim());
+  const qtys = formData.getAll("item_quantity").map((v) => parseNum(v));
+  const costs = formData.getAll("item_unit_cost").map((v) => parseNum(v) ?? 0);
+  const units = formData.getAll("item_unit").map((v) => String(v).trim() || null);
+
   const items: { product_id: string; quantity_ordered: number; unit_cost: number; unit: string | null }[] = [];
-  for (let i = 0; i < 30; i++) {
-    const productId = (formData.get(`item_${i}_product_id`) as string)?.trim();
-    const qty = parseNum(formData.get(`item_${i}_quantity`));
+  for (let i = 0; i < productIds.length; i += 1) {
+    const productId = productIds[i];
+    const qty = qtys[i];
     if (!productId || qty == null || qty <= 0) continue;
-    const unitCost = parseNum(formData.get(`item_${i}_unit_cost`)) ?? 0;
-    const unit = (formData.get(`item_${i}_unit`) as string)?.trim() || null;
-    items.push({ product_id: productId, quantity_ordered: qty, unit_cost: unitCost, unit });
+    items.push({
+      product_id: productId,
+      quantity_ordered: qty,
+      unit_cost: costs[i] ?? 0,
+      unit: units[i] ?? null,
+    });
   }
 
   if (items.length) {
@@ -125,14 +133,22 @@ export async function updatePurchaseOrder(id: string, formData: FormData) {
     })
     .eq("id", id);
 
+  const productIds = formData.getAll("item_product_id").map((v) => String(v).trim());
+  const qtys = formData.getAll("item_quantity").map((v) => parseNum(v));
+  const costs = formData.getAll("item_unit_cost").map((v) => parseNum(v) ?? 0);
+  const units = formData.getAll("item_unit").map((v) => String(v).trim() || null);
+
   const items: { product_id: string; quantity_ordered: number; unit_cost: number; unit: string | null }[] = [];
-  for (let i = 0; i < 30; i++) {
-    const productId = (formData.get(`item_${i}_product_id`) as string)?.trim();
-    const qty = parseNum(formData.get(`item_${i}_quantity`));
+  for (let i = 0; i < productIds.length; i += 1) {
+    const productId = productIds[i];
+    const qty = qtys[i];
     if (!productId || qty == null || qty <= 0) continue;
-    const unitCost = parseNum(formData.get(`item_${i}_unit_cost`)) ?? 0;
-    const unit = (formData.get(`item_${i}_unit`) as string)?.trim() || null;
-    items.push({ product_id: productId, quantity_ordered: qty, unit_cost: unitCost, unit });
+    items.push({
+      product_id: productId,
+      quantity_ordered: qty,
+      unit_cost: costs[i] ?? 0,
+      unit: units[i] ?? null,
+    });
   }
 
   await supabase.from("purchase_order_items").delete().eq("purchase_order_id", id);

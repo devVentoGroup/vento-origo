@@ -1,5 +1,5 @@
 type BuildMessageParams = {
-  orderId: string;
+  orderRef: string;
   supplierName: string;
   siteName: string;
   expectedAt?: string | null;
@@ -22,7 +22,7 @@ export function buildPurchaseOrderMessage(params: BuildMessageParams): string {
 
   return [
     `Hola ${params.supplierName},`,
-    `Adjuntamos la orden de compra ${params.orderId} de ${params.siteName}.`,
+    `Adjuntamos la orden de compra ${params.orderRef} de ${params.siteName}.`,
     `Fecha esperada: ${expectedDate}.`,
     `Total estimado: ${total}.`,
     "",
@@ -31,4 +31,3 @@ export function buildPurchaseOrderMessage(params: BuildMessageParams): string {
     "Gracias.",
   ].join("\n");
 }
-

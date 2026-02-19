@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 
 import { buildPurchaseOrderPdf } from "@/lib/purchase-orders/pdf";
+import { formatPurchaseOrderRef } from "@/lib/purchase-orders/reference";
+import { verifyPurchaseOrderPdfToken } from "@/lib/purchase-orders/public-pdf-token";
 import { createClient } from "@/lib/supabase/server";
 
 function sanitizeFilename(value: string): string {
@@ -8,25 +10,30 @@ function sanitizeFilename(value: string): string {
 }
 
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  const requestUrl = new URL(req.url);
+  const token = requestUrl.searchParams.get("t") ?? "";
+  const hasValidToken = verifyPurchaseOrderPdfToken(id, token);
   const supabase = await createClient();
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  if (!hasValidToken) {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
 
-  if (!user) {
-    return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
-  }
+    if (!user) {
+      return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
+    }
 
-  const { data: canAccess, error: accessErr } = await supabase.rpc("has_permission", {
-    p_permission_code: "origo.access",
-  });
-  if (accessErr || !canAccess) {
-    return NextResponse.json({ error: "FORBIDDEN" }, { status: 403 });
+    const { data: canAccess, error: accessErr } = await supabase.rpc("has_permission", {
+      p_permission_code: "origo.access",
+    });
+    if (accessErr || !canAccess) {
+      return NextResponse.json({ error: "FORBIDDEN" }, { status: 403 });
+    }
   }
 
   const { data: po, error: poErr } = await supabase
@@ -53,9 +60,10 @@ export async function GET(
 
   const supplierName = (po.suppliers as { name?: string } | null)?.name ?? "-";
   const siteName = (po.sites as { name?: string } | null)?.name ?? "-";
+  const orderRef = formatPurchaseOrderRef({ id: po.id, createdAt: po.created_at });
 
   const lines: string[] = [
-    `Orden: ${po.id}`,
+    `Orden: ${orderRef}`,
     `Estado: ${String(po.status ?? "-")}`,
     `Proveedor: ${supplierName}`,
     `Sede: ${siteName}`,
@@ -100,7 +108,7 @@ export async function GET(
   bodyBytes.set(bytes);
   const body = new Blob([bodyBytes], { type: "application/pdf" });
 
-  const filename = `OC-${sanitizeFilename(String(po.id))}.pdf`;
+  const filename = `${sanitizeFilename(orderRef)}.pdf`;
   return new NextResponse(body, {
     headers: {
       "Content-Type": "application/pdf",

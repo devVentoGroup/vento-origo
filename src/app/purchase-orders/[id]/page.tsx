@@ -11,6 +11,8 @@ import {
 } from "@/components/vento/standard/table";
 import { requireAppAccess } from "@/lib/auth/guard";
 import { buildPurchaseOrderMessage } from "@/lib/purchase-orders/message-template";
+import { createPurchaseOrderPdfToken } from "@/lib/purchase-orders/public-pdf-token";
+import { formatPurchaseOrderRef } from "@/lib/purchase-orders/reference";
 
 import { setPurchaseOrderSent } from "../actions";
 import type { PurchaseOrderItemWithProduct, PurchaseOrderWithRelations } from "../_lib/types";
@@ -90,14 +92,17 @@ export default async function PurchaseOrderDetailPage({
 
   const supplierName = (order.suppliers as { name?: string } | null)?.name ?? "Proveedor";
   const siteName = (order.sites as { name?: string } | null)?.name ?? "Sede";
+  const orderRef = formatPurchaseOrderRef({ id: order.id, createdAt: order.created_at });
 
   const receiveInOrigoHref = new URL(ORIGO_RECEIPTS_URL);
   receiveInOrigoHref.searchParams.set("purchase_order_id", String(order.id));
 
   const pdfPath = `/purchase-orders/${encodeURIComponent(order.id)}/pdf`;
-  const pdfUrl = `${ORIGO_BASE_URL}${pdfPath}`;
+  const pdfToken = createPurchaseOrderPdfToken(order.id);
+  const pdfPathWithToken = `${pdfPath}?t=${encodeURIComponent(pdfToken)}`;
+  const pdfUrl = `${ORIGO_BASE_URL}${pdfPathWithToken}`;
   const messageToSupplier = buildPurchaseOrderMessage({
-    orderId: order.id,
+    orderRef,
     supplierName,
     siteName,
     expectedAt: order.expected_at,
@@ -115,7 +120,7 @@ export default async function PurchaseOrderDetailPage({
               {"<-"} Ordenes de compra
             </Link>
             <h1 className="mt-2 ui-h1">Detalle de orden de compra</h1>
-            <p className="mt-1 font-mono text-sm text-[var(--ui-muted)]">{order.id}</p>
+            <p className="mt-1 font-mono text-sm text-[var(--ui-muted)]">{orderRef}</p>
             <p className="mt-2 ui-body-muted">
               Estado: <strong>{STATUS_LABELS[order.status] ?? order.status}</strong>
             </p>
@@ -135,7 +140,7 @@ export default async function PurchaseOrderDetailPage({
               </>
             ) : null}
 
-            <a href={pdfPath} target="_blank" rel="noopener noreferrer" className="ui-btn ui-btn--ghost">
+            <a href={pdfPathWithToken} target="_blank" rel="noopener noreferrer" className="ui-btn ui-btn--ghost">
               Descargar PDF OC
             </a>
 

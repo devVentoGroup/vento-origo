@@ -20,7 +20,6 @@ type PurchaseOrderGuidedFormProps = {
   suppliers: SupplierOption[];
   sites: SiteOption[];
   products: ProductOption[];
-  maxLines?: number;
   defaultValues?: {
     supplier_id?: string;
     site_id?: string;
@@ -31,6 +30,7 @@ type PurchaseOrderGuidedFormProps = {
 };
 
 type Step = { id: string; title: string; objective: string };
+type LineRow = { product_id: string; quantity: string; unit_cost: string; unit: string };
 
 const STEPS: Step[] = [
   { id: "cabecera", title: "Cabecera", objective: "Define proveedor, sede y fecha esperada." },
@@ -47,6 +47,10 @@ function toNum(v: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function makeEmptyLine(): LineRow {
+  return { product_id: "", quantity: "", unit_cost: "", unit: "" };
+}
+
 export function PurchaseOrderGuidedForm({
   mode,
   action,
@@ -54,7 +58,6 @@ export function PurchaseOrderGuidedForm({
   suppliers,
   sites,
   products,
-  maxLines = 15,
   defaultValues,
 }: PurchaseOrderGuidedFormProps) {
   const [stepId, setStepId] = useState(STEPS[0].id);
@@ -62,24 +65,15 @@ export function PurchaseOrderGuidedForm({
   const [siteId, setSiteId] = useState(toStr(defaultValues?.site_id));
   const [expectedAt, setExpectedAt] = useState(toStr(defaultValues?.expected_at));
   const [notes, setNotes] = useState(toStr(defaultValues?.notes));
-  const [lineRows, setLineRows] = useState(() => {
-    const base = Array.from({ length: maxLines }, () => ({
-      product_id: "",
-      quantity: "",
-      unit_cost: "",
-      unit: "",
-    }));
+  const [lineRows, setLineRows] = useState<LineRow[]>(() => {
     const incoming = defaultValues?.lines ?? [];
-    for (let i = 0; i < Math.min(incoming.length, maxLines); i += 1) {
-      const line = incoming[i];
-      base[i] = {
-        product_id: toStr(line.product_id),
-        quantity: line.quantity == null ? "" : String(line.quantity),
-        unit_cost: line.unit_cost == null ? "" : String(line.unit_cost),
-        unit: toStr(line.unit),
-      };
-    }
-    return base;
+    if (!incoming.length) return [makeEmptyLine()];
+    return incoming.map((line) => ({
+      product_id: toStr(line.product_id),
+      quantity: line.quantity == null ? "" : String(line.quantity),
+      unit_cost: line.unit_cost == null ? "" : String(line.unit_cost),
+      unit: toStr(line.unit),
+    }));
   });
 
   const currentIndex = Math.max(0, STEPS.findIndex((s) => s.id === stepId));
@@ -114,7 +108,14 @@ export function PurchaseOrderGuidedForm({
     setStepId(STEPS[next].id);
   };
 
-  const updateLine = (index: number, field: "product_id" | "quantity" | "unit_cost" | "unit", value: string) => {
+  const addLine = () => setLineRows((current) => [...current, makeEmptyLine()]);
+  const removeLine = (index: number) =>
+    setLineRows((current) => (current.length <= 1 ? current : current.filter((_, i) => i !== index)));
+  const updateLine = (
+    index: number,
+    field: keyof LineRow,
+    value: string
+  ) => {
     setLineRows((current) =>
       current.map((row, i) => (i === index ? { ...row, [field]: value } : row))
     );
@@ -128,10 +129,10 @@ export function PurchaseOrderGuidedForm({
       <input type="hidden" name="notes" value={notes} />
       {lineRows.map((row, index) => (
         <div key={`line-hidden-${index}`}>
-          <input type="hidden" name={`item_${index}_product_id`} value={row.product_id} />
-          <input type="hidden" name={`item_${index}_quantity`} value={row.quantity} />
-          <input type="hidden" name={`item_${index}_unit_cost`} value={row.unit_cost} />
-          <input type="hidden" name={`item_${index}_unit`} value={row.unit} />
+          <input type="hidden" name="item_product_id" value={row.product_id} />
+          <input type="hidden" name="item_quantity" value={row.quantity} />
+          <input type="hidden" name="item_unit_cost" value={row.unit_cost} />
+          <input type="hidden" name="item_unit" value={row.unit} />
         </div>
       ))}
 
@@ -177,12 +178,7 @@ export function PurchaseOrderGuidedForm({
         <div className="grid gap-4 sm:grid-cols-2">
           <label>
             <span className="ui-label">Proveedor *</span>
-            <select
-              value={supplierId}
-              onChange={(e) => setSupplierId(e.target.value)}
-              className="ui-input mt-1"
-              required
-            >
+            <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)} className="ui-input mt-1" required>
               <option value="">Seleccionar...</option>
               {suppliers.map((s) => (
                 <option key={s.id} value={s.id}>{s.name}</option>
@@ -191,12 +187,7 @@ export function PurchaseOrderGuidedForm({
           </label>
           <label>
             <span className="ui-label">Sede *</span>
-            <select
-              value={siteId}
-              onChange={(e) => setSiteId(e.target.value)}
-              className="ui-input mt-1"
-              required
-            >
+            <select value={siteId} onChange={(e) => setSiteId(e.target.value)} className="ui-input mt-1" required>
               <option value="">Seleccionar...</option>
               {sites.map((s) => (
                 <option key={s.id} value={s.id}>{s.name ?? s.id}</option>
@@ -218,84 +209,74 @@ export function PurchaseOrderGuidedForm({
             />
           </label>
         </div>
-        <div className="ui-panel-soft space-y-1 p-3">
-          <div className="ui-caption"><strong>Que significa:</strong> Define proveedor y sede de la orden.</div>
-          <div className="ui-caption"><strong>Cuando usarlo:</strong> Siempre antes de agregar lineas.</div>
-          <div className="ui-caption"><strong>Ejemplo:</strong> Proveedor: Alimentos XYZ; Sede: Vento Group.</div>
-        </div>
       </section>
 
       <section className={stepId === "lineas" ? "ui-panel space-y-4" : "hidden"}>
         <div className="flex items-center justify-between gap-2">
           <div className="ui-h3">Paso 2. Lineas</div>
-          <div className="ui-caption">{validLineCount} linea(s) validas</div>
+          <div className="flex items-center gap-2">
+            <div className="ui-caption">{validLineCount} linea(s) validas</div>
+            <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={addLine}>
+              + Agregar linea
+            </button>
+          </div>
         </div>
-        <div className="overflow-x-auto">
-          <table className="ui-table min-w-full">
-            <thead>
-              <tr>
-                <th className="ui-th text-left">Producto</th>
-                <th className="ui-th text-right">Cantidad</th>
-                <th className="ui-th text-right">Costo unit.</th>
-                <th className="ui-th text-left">Unidad</th>
-              </tr>
-            </thead>
-            <tbody>
-              {lineRows.map((line, i) => (
-                <tr key={`line-${i}`}>
-                  <td className="ui-td">
-                    <select
-                      value={line.product_id}
-                      onChange={(e) => updateLine(i, "product_id", e.target.value)}
-                      className="h-11 w-full min-w-[220px] rounded border border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-3 text-[var(--ui-text)] focus:outline-none focus:ring-2 focus:ring-[var(--ui-brand)]/30"
-                    >
-                      <option value="">--</option>
-                      {products.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.sku ? `${p.sku} - ` : ""}{p.name}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-                  <td className="ui-td text-right">
-                    <input
-                      type="number"
-                      min="0"
-                      step="any"
-                      value={line.quantity}
-                      onChange={(e) => updateLine(i, "quantity", e.target.value)}
-                      className="h-11 w-full rounded border border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-3 text-right text-[var(--ui-text)] focus:outline-none focus:ring-2 focus:ring-[var(--ui-brand)]/30"
-                      placeholder="0"
-                    />
-                  </td>
-                  <td className="ui-td text-right">
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={line.unit_cost}
-                      onChange={(e) => updateLine(i, "unit_cost", e.target.value)}
-                      className="h-11 w-full rounded border border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-3 text-right text-[var(--ui-text)] focus:outline-none focus:ring-2 focus:ring-[var(--ui-brand)]/30"
-                      placeholder="0"
-                    />
-                  </td>
-                  <td className="ui-td">
-                    <input
-                      value={line.unit}
-                      onChange={(e) => updateLine(i, "unit", e.target.value)}
-                      className="h-11 w-20 rounded border border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-2 text-[var(--ui-text)] focus:outline-none focus:ring-2 focus:ring-[var(--ui-brand)]/30"
-                      placeholder="u"
-                    />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div className="ui-panel-soft space-y-1 p-3">
-          <div className="ui-caption"><strong>Que significa:</strong> Cada linea representa un item de compra.</div>
-          <div className="ui-caption"><strong>Cuando usarlo:</strong> Cantidad mayor a 0 para que la linea se guarde.</div>
-          <div className="ui-caption"><strong>Ejemplo:</strong> Harina x 10, costo 5200, unidad kg.</div>
+        <div className="space-y-3">
+          {lineRows.map((line, i) => (
+            <div key={`line-${i}`} className="ui-panel-soft grid gap-3 sm:grid-cols-5">
+              <label className="sm:col-span-2">
+                <span className="ui-label">Producto</span>
+                <select
+                  value={line.product_id}
+                  onChange={(e) => updateLine(i, "product_id", e.target.value)}
+                  className="ui-input mt-1"
+                >
+                  <option value="">Seleccionar...</option>
+                  {products.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.sku ? `${p.sku} - ` : ""}{p.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span className="ui-label">Cantidad</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={line.quantity}
+                  onChange={(e) => updateLine(i, "quantity", e.target.value)}
+                  className="ui-input mt-1"
+                />
+              </label>
+              <label>
+                <span className="ui-label">Costo unit.</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={line.unit_cost}
+                  onChange={(e) => updateLine(i, "unit_cost", e.target.value)}
+                  className="ui-input mt-1"
+                />
+              </label>
+              <label>
+                <span className="ui-label">Unidad</span>
+                <input
+                  value={line.unit}
+                  onChange={(e) => updateLine(i, "unit", e.target.value)}
+                  className="ui-input mt-1"
+                  placeholder="u"
+                />
+              </label>
+              <div className="sm:col-span-5 flex justify-end">
+                <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => removeLine(i)}>
+                  Quitar linea
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
       </section>
 
@@ -351,3 +332,4 @@ export function PurchaseOrderGuidedForm({
     </form>
   );
 }
+
