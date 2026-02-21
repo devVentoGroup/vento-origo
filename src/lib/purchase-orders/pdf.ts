@@ -82,6 +82,14 @@ function rgbToPdf(color: Rgb): string {
   return `${(color[0] / 255).toFixed(3)} ${(color[1] / 255).toFixed(3)} ${(color[2] / 255).toFixed(3)}`;
 }
 
+function tintColor(color: Rgb, amount: number): Rgb {
+  return [
+    Math.max(0, Math.min(255, color[0] + amount)),
+    Math.max(0, Math.min(255, color[1] + amount)),
+    Math.max(0, Math.min(255, color[2] + amount)),
+  ];
+}
+
 function textWidthApprox(text: string, size: number, weight: "normal" | "bold" = "normal"): number {
   const factor = weight === "bold" ? 0.54 : 0.52;
   return sanitizeText(text).length * size * factor;
@@ -333,8 +341,9 @@ function buildPurchaseOrderPdfObjects(pageStreams: string[], imageResource?: Pdf
 export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array {
   const primaryColor = parseHexColor(
     input.brand.headerColor ?? input.brand.primaryColor,
-    [11, 91, 67]
+    [15, 138, 100]
   );
+  const waveColor = tintColor(primaryColor, 24);
   const softColor = parseHexColor(input.brand.softColor, [236, 255, 247]);
   const textColor = parseHexColor(input.brand.textColor, [11, 42, 31]);
   const mutedColor = parseHexColor(input.brand.mutedColor, [100, 116, 139]);
@@ -429,17 +438,19 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
   };
 
   const drawHeader = () => {
-    ensureSpace(148);
-    const headerHeight = 136;
+    ensureSpace(126);
+    const headerHeight = 114;
     const headerTop = 0;
     rect(0, headerTop, PAGE_WIDTH, headerHeight, "f", primaryColor);
     rect(0, headerTop, PAGE_WIDTH, 7, "f", primaryColor);
-    wave(0, headerTop + 103, PAGE_WIDTH, 33, primaryColor);
+    wave(0, headerTop + 86, PAGE_WIDTH, 28, waveColor);
 
-    const logoFrameX = PAGE_MARGIN;
-    const logoFrameTop = headerTop + 20;
-    const logoFrameSize = 70;
-    const brandTextX = logoFrameX + logoFrameSize + 20;
+    const logoFrameSize = 64;
+    const brandBlockWidth = 360;
+    const brandBlockX = (PAGE_WIDTH - brandBlockWidth) / 2;
+    const logoFrameX = brandBlockX;
+    const logoFrameTop = headerTop + 18;
+    const brandTextX = logoFrameX + logoFrameSize + 18;
 
     if (logoImage) {
       const scale = Math.min(logoFrameSize / logoImage.width, logoFrameSize / logoImage.height);
@@ -462,7 +473,7 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
     text({
       value: input.brand.businessName,
       x: brandTextX,
-      top: headerTop + 36,
+      top: headerTop + 32,
       size: 12,
       font: "F2",
       color: white,
@@ -470,21 +481,21 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
     text({
       value: input.brand.documentTitle,
       x: brandTextX,
-      top: headerTop + 62,
-      size: 20,
+      top: headerTop + 56,
+      size: 18,
       font: "F2",
       color: white,
     });
     text({
       value: input.orderRef,
       x: brandTextX,
-      top: headerTop + 84,
-      size: 11,
+      top: headerTop + 76,
+      size: 10.5,
       font: "F1",
       color: headerMuted,
     });
 
-    cursorTop = headerHeight + 18;
+    cursorTop = headerHeight + 14;
   };
 
   const drawSummary = () => {
