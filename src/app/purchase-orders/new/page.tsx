@@ -24,12 +24,19 @@ export default async function NewPurchaseOrderPage({
       .select("site_id,sites(id,name)")
       .eq("employee_id", user.id)
       .eq("is_active", true),
-    supabase.from("products").select("id,name,sku").order("name").limit(500),
+    supabase.from("products").select("id,name,sku,unit,stock_unit_code,cost").order("name").limit(500),
   ]);
 
   const suppliers = (suppliersRes.data ?? []) as { id: string; name: string }[];
   const sites = normalizeSitesFromEmployeeSites(sitesRes.data as EmployeeSiteRow[]);
-  const products = (productsRes.data ?? []) as { id: string; name: string; sku: string | null }[];
+  const products = (productsRes.data ?? []) as {
+    id: string;
+    name: string;
+    sku: string | null;
+    unit: string | null;
+    stock_unit_code: string | null;
+    cost: number | null;
+  }[];
 
   const sp = (await searchParams) ?? {};
   const errorMsg = sp.error;

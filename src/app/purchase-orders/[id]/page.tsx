@@ -13,8 +13,9 @@ import { requireAppAccess } from "@/lib/auth/guard";
 import { buildPurchaseOrderMessage } from "@/lib/purchase-orders/message-template";
 import { createPurchaseOrderPdfToken } from "@/lib/purchase-orders/public-pdf-token";
 import { formatPurchaseOrderRef } from "@/lib/purchase-orders/reference";
+import { normalizeQuantityToBase, normalizeUnitCostToBase } from "@/lib/units/normalize";
 
-import { setPurchaseOrderSent } from "../actions";
+import { deletePurchaseOrder, setPurchaseOrderSent } from "../actions";
 import type { PurchaseOrderItemWithProduct, PurchaseOrderWithRelations } from "../_lib/types";
 
 export const dynamic = "force-dynamic";
@@ -43,6 +44,21 @@ function formatMoney(value: number | null | undefined, currency: string | null |
   }).format(Number(value));
 }
 
+function formatQty(value: number | null | undefined): string {
+  const safe = Number(value ?? 0);
+  return new Intl.NumberFormat("es-CO", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 6,
+  }).format(Number.isFinite(safe) ? safe : 0);
+}
+
+function normalizeRole(value: string | null | undefined): string {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
 export default async function PurchaseOrderDetailPage({
   params,
   searchParams,
@@ -50,7 +66,7 @@ export default async function PurchaseOrderDetailPage({
   params: Promise<{ id: string }>;
   searchParams?: Promise<{ error?: string }>;
 }) {
-  const { supabase } = await requireAppAccess({ appId: APP_ID, returnTo: RETURN_TO });
+  const { supabase, user } = await requireAppAccess({ appId: APP_ID, returnTo: RETURN_TO });
   const { id } = await params;
   const sp = (await searchParams) ?? {};
   const errorMsg = sp.error;
@@ -89,6 +105,14 @@ export default async function PurchaseOrderDetailPage({
   const lineItems = (items ?? []) as unknown as PurchaseOrderItemWithProduct[];
   const isDraft = order.status === "draft";
   const canReceiveInOrigo = order.status === "sent" || order.status === "received";
+  const { data: employee } = await supabase
+    .from("employees")
+    .select("role")
+    .eq("id", user.id)
+    .maybeSingle();
+  const activeRole = normalizeRole(String(employee?.role ?? ""));
+  const canDeleteByRole = ["propietario", "gerente", "gerente_general", "gerente general"].includes(activeRole);
+  const canDeleteOrder = isDraft && canDeleteByRole;
 
   const supplierName = (order.suppliers as { name?: string } | null)?.name ?? "Proveedor";
   const siteName = (order.sites as { name?: string } | null)?.name ?? "Sede";
@@ -137,6 +161,13 @@ export default async function PurchaseOrderDetailPage({
                     Enviar orden
                   </button>
                 </form>
+                {canDeleteOrder ? (
+                  <form action={deletePurchaseOrder.bind(null, id)}>
+                    <button type="submit" className="ui-btn ui-btn--ghost">
+                      Eliminar OC
+                    </button>
+                  </form>
+                ) : null}
               </>
             ) : null}
 
@@ -163,6 +194,10 @@ export default async function PurchaseOrderDetailPage({
           <div className="ui-alert ui-alert--error">
             {errorMsg === "only_draft_editable"
               ? "Solo las ordenes en borrador se pueden editar."
+              : errorMsg === "only_draft_deletable"
+                ? "Solo las ordenes en borrador se pueden eliminar."
+                : errorMsg === "delete_forbidden_role"
+                  ? "Solo propietarios y gerentes pueden eliminar ordenes."
               : decodeURIComponent(errorMsg)}
           </div>
         ) : null}
@@ -198,6 +233,10 @@ export default async function PurchaseOrderDetailPage({
 
       <section className="ui-panel overflow-x-auto">
         <div className="ui-h3 mb-4">Lineas</div>
+        <div className="mb-4 rounded-lg border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3 text-sm text-[var(--ui-muted)]">
+          Cantidad = unidad operativa de compra. Cantidad base y costo base son equivalencias normalizadas
+          para comparar insumos entre si (por ejemplo, kg a g).
+        </div>
         {lineItems.length === 0 ? (
           <p className="ui-body-muted">Sin lineas registradas.</p>
         ) : (
@@ -205,9 +244,11 @@ export default async function PurchaseOrderDetailPage({
             <TableHead>
               <TableRow>
                 <TableHeaderCell>Producto</TableHeaderCell>
-                <TableHeaderCell className="text-right">Cantidad</TableHeaderCell>
+                <TableHeaderCell className="text-right">Cantidad (op.)</TableHeaderCell>
+                <TableHeaderCell className="text-right">Cantidad (base)</TableHeaderCell>
                 <TableHeaderCell className="text-right">Recibido</TableHeaderCell>
-                <TableHeaderCell className="text-right">Costo unit.</TableHeaderCell>
+                <TableHeaderCell className="text-right">Costo unit. (op.)</TableHeaderCell>
+                <TableHeaderCell className="text-right">Costo unit. (base)</TableHeaderCell>
                 <TableHeaderCell className="text-right">Total</TableHeaderCell>
                 <TableHeaderCell>Unidad</TableHeaderCell>
               </TableRow>
@@ -218,16 +259,31 @@ export default async function PurchaseOrderDetailPage({
                 const productLabel = product
                   ? `${product.sku ? `${product.sku} - ` : ""}${product.name ?? ""}`
                   : item.product_id;
+                const opQty = Number(item.quantity_ordered ?? 0);
+                const opCost = Number(item.unit_cost ?? 0);
+                const unitCode = String(item.unit ?? "u");
+                const normalizedQty = normalizeQuantityToBase({ quantity: opQty, unit: unitCode });
+                const normalizedCost = normalizeUnitCostToBase({ unitCost: opCost, unit: unitCode });
 
                 return (
                   <TableRow key={item.id}>
                     <TableCell>{productLabel}</TableCell>
-                    <TableCell className="text-right">{Number(item.quantity_ordered)}</TableCell>
                     <TableCell className="text-right">
-                      {item.quantity_received != null ? Number(item.quantity_received) : "-"}
+                      {formatQty(opQty)} {unitCode}
                     </TableCell>
-                    <TableCell className="text-right">{formatMoney(Number(item.unit_cost), "COP")}</TableCell>
-                    <TableCell className="text-right">{formatMoney(item.line_total, "COP")}</TableCell>
+                    <TableCell className="text-right">
+                      {formatQty(normalizedQty.baseQuantity)} {normalizedQty.baseUnit}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {item.quantity_received != null ? formatQty(Number(item.quantity_received)) : "-"}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {formatMoney(opCost, order.currency)} / {unitCode}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {formatMoney(normalizedCost.baseUnitCost, order.currency)} / {normalizedQty.baseUnit}
+                    </TableCell>
+                    <TableCell className="text-right">{formatMoney(item.line_total, order.currency)}</TableCell>
                     <TableCell>{item.unit ?? "-"}</TableCell>
                   </TableRow>
                 );

@@ -2,10 +2,18 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import { normalizeQuantityToBase, normalizeUnitCostToBase } from "@/lib/units/normalize";
 
 type SupplierOption = { id: string; name: string };
 type SiteOption = { id: string; name?: string | null };
-type ProductOption = { id: string; name: string; sku?: string | null };
+type ProductOption = {
+  id: string;
+  name: string;
+  sku?: string | null;
+  unit?: string | null;
+  stock_unit_code?: string | null;
+  cost?: number | null;
+};
 type LineItemValue = {
   product_id?: string;
   quantity?: number | null;
@@ -51,6 +59,22 @@ function makeEmptyLine(): LineRow {
   return { product_id: "", quantity: "", unit_cost: "", unit: "" };
 }
 
+function formatAmount(value: number): string {
+  return new Intl.NumberFormat("es-CO", {
+    style: "currency",
+    currency: "COP",
+    maximumFractionDigits: 2,
+  }).format(Number.isFinite(value) ? value : 0);
+}
+
+function formatQty(value: number): string {
+  const safe = Number.isFinite(value) ? value : 0;
+  return new Intl.NumberFormat("es-CO", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 6,
+  }).format(safe);
+}
+
 export function PurchaseOrderGuidedForm({
   mode,
   action,
@@ -91,6 +115,9 @@ export function PurchaseOrderGuidedForm({
     [lineRows]
   );
   const canSubmit = isHeaderComplete;
+  const productById = useMemo(() => {
+    return new Map(products.map((product) => [product.id, product]));
+  }, [products]);
 
   const summaryTotal = useMemo(
     () =>
@@ -111,13 +138,27 @@ export function PurchaseOrderGuidedForm({
   const addLine = () => setLineRows((current) => [...current, makeEmptyLine()]);
   const removeLine = (index: number) =>
     setLineRows((current) => (current.length <= 1 ? current : current.filter((_, i) => i !== index)));
-  const updateLine = (
-    index: number,
-    field: keyof LineRow,
-    value: string
-  ) => {
+  const updateLine = (index: number, field: keyof LineRow, value: string) => {
     setLineRows((current) =>
       current.map((row, i) => (i === index ? { ...row, [field]: value } : row))
+    );
+  };
+
+  const handleProductChange = (index: number, productId: string) => {
+    const product = productById.get(productId);
+    const unitSuggestion = String(product?.stock_unit_code ?? product?.unit ?? "").trim();
+    const costSuggestion = Number(product?.cost ?? 0);
+
+    setLineRows((current) =>
+      current.map((row, i) => {
+        if (i !== index) return row;
+        return {
+          ...row,
+          product_id: productId,
+          unit: unitSuggestion || row.unit,
+          unit_cost: row.unit_cost || (costSuggestion > 0 ? String(costSuggestion) : row.unit_cost),
+        };
+      })
     );
   };
 
@@ -222,13 +263,22 @@ export function PurchaseOrderGuidedForm({
           </div>
         </div>
         <div className="space-y-3">
-          {lineRows.map((line, i) => (
+          {lineRows.map((line, i) => {
+            const product = productById.get(line.product_id);
+            const quantity = toNum(line.quantity) ?? 0;
+            const unitCost = toNum(line.unit_cost) ?? 0;
+            const unitCode = line.unit || product?.stock_unit_code || product?.unit || "";
+            const normalizedQty = normalizeQuantityToBase({ quantity, unit: unitCode });
+            const normalizedCost = normalizeUnitCostToBase({ unitCost, unit: unitCode });
+            const lineTotal = quantity > 0 ? quantity * unitCost : 0;
+
+            return (
             <div key={`line-${i}`} className="ui-panel-soft grid gap-3 sm:grid-cols-5">
               <label className="sm:col-span-2">
                 <span className="ui-label">Producto</span>
                 <select
                   value={line.product_id}
-                  onChange={(e) => updateLine(i, "product_id", e.target.value)}
+                  onChange={(e) => handleProductChange(i, e.target.value)}
                   className="ui-input mt-1"
                 >
                   <option value="">Seleccionar...</option>
@@ -238,6 +288,11 @@ export function PurchaseOrderGuidedForm({
                     </option>
                   ))}
                 </select>
+                <div className="mt-1 text-xs text-[var(--ui-muted)]">
+                  {line.product_id
+                    ? `Unidad operativa: ${unitCode || "u"} | Base: ${normalizedQty.baseUnit}`
+                    : "Selecciona un insumo para cargar su unidad operativa."}
+                </div>
               </label>
               <label>
                 <span className="ui-label">Cantidad</span>
@@ -249,6 +304,11 @@ export function PurchaseOrderGuidedForm({
                   onChange={(e) => updateLine(i, "quantity", e.target.value)}
                   className="ui-input mt-1"
                 />
+                <div className="mt-1 text-xs text-[var(--ui-muted)]">
+                  {quantity > 0
+                    ? `Equivale a ${formatQty(normalizedQty.baseQuantity)} ${normalizedQty.baseUnit} en unidad base.`
+                    : "Cantidad en unidad operativa de compra del insumo."}
+                </div>
               </label>
               <label>
                 <span className="ui-label">Costo unit.</span>
@@ -260,6 +320,11 @@ export function PurchaseOrderGuidedForm({
                   onChange={(e) => updateLine(i, "unit_cost", e.target.value)}
                   className="ui-input mt-1"
                 />
+                <div className="mt-1 text-xs text-[var(--ui-muted)]">
+                  {unitCost > 0
+                    ? `${formatAmount(normalizedCost.baseUnitCost)} por ${normalizedCost.baseUnit} (normalizado).`
+                    : "Costo por unidad operativa."}
+                </div>
               </label>
               <label>
                 <span className="ui-label">Unidad</span>
@@ -270,13 +335,24 @@ export function PurchaseOrderGuidedForm({
                   placeholder="u"
                 />
               </label>
+              <div className="sm:col-span-5 rounded-lg border border-[var(--ui-border)] bg-white/70 px-3 py-2 text-xs text-[var(--ui-muted)]">
+                <strong className="text-[var(--ui-text)]">Detalle:</strong>{" "}
+                {line.product_id
+                  ? `Cantidad operativa ${formatQty(quantity)} ${unitCode || "u"} | Cantidad base ${formatQty(
+                      normalizedQty.baseQuantity
+                    )} ${normalizedQty.baseUnit} | Costo base ${formatAmount(
+                      normalizedCost.baseUnitCost
+                    )}/${normalizedQty.baseUnit} | Total linea ${formatAmount(lineTotal)}`
+                  : "Completa producto, cantidad y costo para ver equivalencias y costos normalizados."}
+              </div>
               <div className="sm:col-span-5 flex justify-end">
                 <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => removeLine(i)}>
                   Quitar linea
                 </button>
               </div>
             </div>
-          ))}
+          );
+          })}
         </div>
       </section>
 
@@ -332,4 +408,3 @@ export function PurchaseOrderGuidedForm({
     </form>
   );
 }
-

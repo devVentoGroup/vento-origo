@@ -5,6 +5,20 @@ import { redirect } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/server";
 
+const DELETE_ALLOWED_ROLES = new Set([
+  "propietario",
+  "gerente",
+  "gerente_general",
+  "gerente general",
+]);
+
+function normalizeRole(value: string | null | undefined): string {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
 function parseNum(v: FormDataEntryValue | null): number | null {
   if (v == null || v === "") return null;
   const n = Number(typeof v === "string" ? v.trim() : v);
@@ -174,4 +188,59 @@ export async function updatePurchaseOrder(id: string, formData: FormData) {
   revalidatePath("/purchase-orders");
   revalidatePath(`/purchase-orders/${id}`);
   redirect(`/purchase-orders/${id}`);
+}
+
+export async function deletePurchaseOrder(id: string) {
+  const supabase = await createClient();
+  const { data: userRes } = await supabase.auth.getUser();
+  const user = userRes.user ?? null;
+  if (!user) redirect("/login");
+
+  const { data: employee, error: employeeErr } = await supabase
+    .from("employees")
+    .select("role")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  const role = normalizeRole(String(employee?.role ?? ""));
+  if (employeeErr || !employee || !DELETE_ALLOWED_ROLES.has(role)) {
+    redirect(`/purchase-orders/${id}?error=delete_forbidden_role`);
+  }
+
+  const { data: po, error: poErr } = await supabase
+    .from("purchase_orders")
+    .select("id,status")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (poErr || !po) {
+    redirect(`/purchase-orders/${id}?error=${encodeURIComponent(poErr?.message ?? "Orden no encontrada")}`);
+  }
+
+  if (String(po.status) !== "draft") {
+    redirect(`/purchase-orders/${id}?error=only_draft_deletable`);
+  }
+
+  const { error: deleteItemsErr } = await supabase
+    .from("purchase_order_items")
+    .delete()
+    .eq("purchase_order_id", id);
+
+  if (deleteItemsErr) {
+    redirect(`/purchase-orders/${id}?error=${encodeURIComponent(deleteItemsErr.message)}`);
+  }
+
+  const { error: deletePoErr } = await supabase
+    .from("purchase_orders")
+    .delete()
+    .eq("id", id)
+    .eq("status", "draft");
+
+  if (deletePoErr) {
+    redirect(`/purchase-orders/${id}?error=${encodeURIComponent(deletePoErr.message)}`);
+  }
+
+  revalidatePath("/purchase-orders");
+  revalidatePath(`/purchase-orders/${id}`);
+  redirect("/purchase-orders");
 }
