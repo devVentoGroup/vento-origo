@@ -333,7 +333,7 @@ function buildPurchaseOrderPdfObjects(pageStreams: string[], imageResource?: Pdf
 export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array {
   const primaryColor = parseHexColor(
     input.brand.headerColor ?? input.brand.primaryColor,
-    [46, 189, 143]
+    [70, 205, 160]
   );
   const softColor = parseHexColor(input.brand.softColor, [236, 255, 247]);
   const textColor = parseHexColor(input.brand.textColor, [11, 42, 31]);
@@ -437,9 +437,9 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
     wave(0, headerTop + 94, PAGE_WIDTH, 32, white);
 
     const logoFrameSize = 64;
-    const logoFrameX = PAGE_MARGIN;
+    const logoFrameX = 28;
     const logoFrameTop = headerTop + 12;
-    const brandTextX = logoFrameX + logoFrameSize + 18;
+    const brandTextX = logoFrameX + logoFrameSize + 28;
 
     if (logoImage) {
       const scale = Math.min(logoFrameSize / logoImage.width, logoFrameSize / logoImage.height);
