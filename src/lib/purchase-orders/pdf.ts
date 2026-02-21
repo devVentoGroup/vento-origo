@@ -331,9 +331,10 @@ function buildPurchaseOrderPdfObjects(pageStreams: string[], imageResource?: Pdf
 }
 
 export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array {
-  const primaryColor = parseHexColor(input.brand.primaryColor, [16, 185, 129]);
-  const waveColor = parseHexColor(input.brand.waveColor, [5, 150, 105]);
-  const headerColor = parseHexColor(input.brand.headerColor, [11, 91, 67]);
+  const primaryColor = parseHexColor(
+    input.brand.headerColor ?? input.brand.primaryColor,
+    [11, 91, 67]
+  );
   const softColor = parseHexColor(input.brand.softColor, [236, 255, 247]);
   const textColor = parseHexColor(input.brand.textColor, [11, 42, 31]);
   const mutedColor = parseHexColor(input.brand.mutedColor, [100, 116, 139]);
@@ -341,7 +342,7 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
   const headerMuted: Rgb = [209, 250, 229];
   const borderColor: Rgb = [209, 213, 219];
   const logoImage = input.brand.logoPngBytes
-    ? buildPngImageResource(input.brand.logoPngBytes, "ImBrand", headerColor)
+    ? buildPngImageResource(input.brand.logoPngBytes, "ImBrand", primaryColor)
     : null;
 
   const pages: string[][] = [];
@@ -431,13 +432,14 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
     ensureSpace(148);
     const headerHeight = 136;
     const headerTop = 0;
-    rect(0, headerTop, PAGE_WIDTH, headerHeight, "f", headerColor);
+    rect(0, headerTop, PAGE_WIDTH, headerHeight, "f", primaryColor);
     rect(0, headerTop, PAGE_WIDTH, 7, "f", primaryColor);
-    wave(0, headerTop + 103, PAGE_WIDTH, 33, waveColor);
+    wave(0, headerTop + 103, PAGE_WIDTH, 33, primaryColor);
 
     const logoFrameX = PAGE_MARGIN;
     const logoFrameTop = headerTop + 20;
-    const logoFrameSize = 56;
+    const logoFrameSize = 70;
+    const brandTextX = logoFrameX + logoFrameSize + 20;
 
     if (logoImage) {
       const scale = Math.min(logoFrameSize / logoImage.width, logoFrameSize / logoImage.height);
@@ -459,7 +461,7 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
     }
     text({
       value: input.brand.businessName,
-      x: PAGE_MARGIN + 72,
+      x: brandTextX,
       top: headerTop + 36,
       size: 12,
       font: "F2",
@@ -467,7 +469,7 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
     });
     text({
       value: input.brand.documentTitle,
-      x: PAGE_MARGIN + 72,
+      x: brandTextX,
       top: headerTop + 62,
       size: 20,
       font: "F2",
@@ -475,7 +477,7 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
     });
     text({
       value: input.orderRef,
-      x: PAGE_MARGIN + 72,
+      x: brandTextX,
       top: headerTop + 84,
       size: 11,
       font: "F1",
