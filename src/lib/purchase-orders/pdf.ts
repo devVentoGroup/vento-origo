@@ -333,7 +333,7 @@ function buildPurchaseOrderPdfObjects(pageStreams: string[], imageResource?: Pdf
 export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array {
   const primaryColor = parseHexColor(
     input.brand.headerColor ?? input.brand.primaryColor,
-    [28, 169, 124]
+    [46, 189, 143]
   );
   const softColor = parseHexColor(input.brand.softColor, [236, 255, 247]);
   const textColor = parseHexColor(input.brand.textColor, [11, 42, 31]);
@@ -438,7 +438,7 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
 
     const logoFrameSize = 64;
     const logoFrameX = PAGE_MARGIN;
-    const logoFrameTop = headerTop + 16;
+    const logoFrameTop = headerTop + 12;
     const brandTextX = logoFrameX + logoFrameSize + 18;
 
     if (logoImage) {
@@ -462,7 +462,7 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
     text({
       value: input.brand.businessName,
       x: brandTextX,
-      top: headerTop + 34,
+      top: headerTop + 30,
       size: 12,
       font: "F2",
       color: white,
@@ -470,7 +470,7 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
     text({
       value: input.brand.documentTitle,
       x: brandTextX,
-      top: headerTop + 60,
+      top: headerTop + 56,
       size: 18,
       font: "F2",
       color: white,
@@ -478,7 +478,7 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
     text({
       value: input.orderRef,
       x: brandTextX,
-      top: headerTop + 82,
+      top: headerTop + 78,
       size: 10.5,
       font: "F1",
       color: headerMuted,
