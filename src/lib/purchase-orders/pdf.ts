@@ -126,7 +126,10 @@ function paethPredictor(a: number, b: number, c: number): number {
   return c;
 }
 
-function decodePngToRgb(pngBytes: Uint8Array): { width: number; height: number; rgb: Uint8Array } | null {
+function decodePngToRgb(
+  pngBytes: Uint8Array,
+  alphaMatte: Rgb = [255, 255, 255]
+): { width: number; height: number; rgb: Uint8Array } | null {
   const signature = [137, 80, 78, 71, 13, 10, 26, 10];
   if (pngBytes.length < 8) return null;
   for (let i = 0; i < signature.length; i += 1) {
@@ -232,9 +235,10 @@ function decodePngToRgb(pngBytes: Uint8Array): { width: number; height: number; 
 
   let dst = 0;
   for (let src = 0; src + 3 < unfiltered.length; src += 4) {
-    rgb[dst] = unfiltered[src];
-    rgb[dst + 1] = unfiltered[src + 1];
-    rgb[dst + 2] = unfiltered[src + 2];
+    const alpha = unfiltered[src + 3] / 255;
+    rgb[dst] = Math.round(unfiltered[src] * alpha + alphaMatte[0] * (1 - alpha));
+    rgb[dst + 1] = Math.round(unfiltered[src + 1] * alpha + alphaMatte[1] * (1 - alpha));
+    rgb[dst + 2] = Math.round(unfiltered[src + 2] * alpha + alphaMatte[2] * (1 - alpha));
     dst += 3;
   }
   return { width, height, rgb };
@@ -247,8 +251,12 @@ type PdfImageResource = {
   height: number;
 };
 
-function buildPngImageResource(pngBytes: Uint8Array, name = "ImBrand"): PdfImageResource | null {
-  const decoded = decodePngToRgb(pngBytes);
+function buildPngImageResource(
+  pngBytes: Uint8Array,
+  name = "ImBrand",
+  alphaMatte: Rgb = [255, 255, 255]
+): PdfImageResource | null {
+  const decoded = decodePngToRgb(pngBytes, alphaMatte);
   if (!decoded) return null;
 
   const compressed = deflateSync(Buffer.from(decoded.rgb));
@@ -332,7 +340,9 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
   const white: Rgb = [255, 255, 255];
   const headerMuted: Rgb = [209, 250, 229];
   const borderColor: Rgb = [209, 213, 219];
-  const logoImage = input.brand.logoPngBytes ? buildPngImageResource(input.brand.logoPngBytes, "ImBrand") : null;
+  const logoImage = input.brand.logoPngBytes
+    ? buildPngImageResource(input.brand.logoPngBytes, "ImBrand", headerColor)
+    : null;
 
   const pages: string[][] = [];
   let commands: string[] = [];
@@ -420,12 +430,13 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
   const drawHeader = () => {
     ensureSpace(148);
     const headerHeight = 136;
-    rect(0, cursorTop, PAGE_WIDTH, headerHeight, "f", headerColor);
-    rect(0, cursorTop, PAGE_WIDTH, 7, "f", primaryColor);
-    wave(0, cursorTop + 103, PAGE_WIDTH, 33, waveColor);
+    const headerTop = 0;
+    rect(0, headerTop, PAGE_WIDTH, headerHeight, "f", headerColor);
+    rect(0, headerTop, PAGE_WIDTH, 7, "f", primaryColor);
+    wave(0, headerTop + 103, PAGE_WIDTH, 33, waveColor);
 
     const logoFrameX = PAGE_MARGIN;
-    const logoFrameTop = cursorTop + 20;
+    const logoFrameTop = headerTop + 20;
     const logoFrameSize = 56;
 
     if (logoImage) {
@@ -439,7 +450,7 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
       text({
         value: input.brand.logoText || "VG",
         x: logoFrameX + logoFrameSize / 2,
-        top: cursorTop + 54,
+        top: headerTop + 54,
         size: 16,
         font: "F2",
         color: white,
@@ -449,7 +460,7 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
     text({
       value: input.brand.businessName,
       x: PAGE_MARGIN + 72,
-      top: cursorTop + 36,
+      top: headerTop + 36,
       size: 12,
       font: "F2",
       color: white,
@@ -457,7 +468,7 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
     text({
       value: input.brand.documentTitle,
       x: PAGE_MARGIN + 72,
-      top: cursorTop + 62,
+      top: headerTop + 62,
       size: 20,
       font: "F2",
       color: white,
@@ -465,13 +476,13 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
     text({
       value: input.orderRef,
       x: PAGE_MARGIN + 72,
-      top: cursorTop + 84,
+      top: headerTop + 84,
       size: 11,
       font: "F1",
       color: headerMuted,
     });
 
-    cursorTop += 154;
+    cursorTop = headerHeight + 18;
   };
 
   const drawSummary = () => {
