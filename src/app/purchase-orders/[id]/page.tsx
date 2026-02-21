@@ -29,6 +29,12 @@ const STATUS_LABELS: Record<string, string> = {
   received: "Recibida",
 };
 
+const STATUS_CHIP_CLASSES: Record<string, string> = {
+  draft: "ui-chip ui-chip--warn",
+  sent: "ui-chip ui-chip--brand",
+  received: "ui-chip ui-chip--success",
+};
+
 const ORIGO_RECEIPTS_URL =
   process.env.NEXT_PUBLIC_ORIGO_RECEIPTS_URL ||
   `${process.env.NEXT_PUBLIC_ORIGO_URL?.replace(/\/$/, "") || "https://origo.ventogroup.co"}/receipts/new`;
@@ -137,33 +143,37 @@ export default async function PurchaseOrderDetailPage({
 
   return (
     <div className="w-full space-y-6">
-      <section className="ui-panel space-y-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-          <div>
+      <section className="ui-panel space-y-5">
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(360px,540px)]">
+          <div className="space-y-4">
             <Link href="/purchase-orders" className="ui-caption text-[var(--ui-brand-600)] hover:underline">
               {"<-"} Ordenes de compra
             </Link>
-            <h1 className="mt-2 ui-h1">Detalle de orden de compra</h1>
-            <p className="mt-1 font-mono text-sm text-[var(--ui-muted)]">{orderRef}</p>
-            <p className="mt-2 ui-body-muted">
-              Estado: <strong>{STATUS_LABELS[order.status] ?? order.status}</strong>
-            </p>
+            <h1 className="ui-h1">Detalle de orden de compra</h1>
+            <p className="font-mono text-sm text-[var(--ui-muted)]">{orderRef}</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={STATUS_CHIP_CLASSES[order.status] ?? "ui-chip"}>
+                Estado: {STATUS_LABELS[order.status] ?? order.status}
+              </span>
+              <span className="ui-chip">{lineItems.length} linea(s)</span>
+              <span className="ui-chip">{formatMoney(order.total_amount, order.currency)}</span>
+            </div>
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          <div className="grid gap-2 sm:grid-cols-2">
             {isDraft ? (
               <>
-                <Link href={`/purchase-orders/${id}/edit`} className="ui-btn ui-btn--ghost">
+                <Link href={`/purchase-orders/${id}/edit`} className="ui-btn ui-btn--ghost w-full whitespace-nowrap">
                   Editar
                 </Link>
-                <form action={setPurchaseOrderSent.bind(null, id)}>
-                  <button type="submit" className="ui-btn ui-btn--brand">
+                <form action={setPurchaseOrderSent.bind(null, id)} className="w-full">
+                  <button type="submit" className="ui-btn ui-btn--brand w-full whitespace-nowrap">
                     Enviar orden
                   </button>
                 </form>
                 {canDeleteOrder ? (
-                  <form action={deletePurchaseOrder.bind(null, id)}>
-                    <button type="submit" className="ui-btn ui-btn--ghost">
+                  <form action={deletePurchaseOrder.bind(null, id)} className="w-full">
+                    <button type="submit" className="ui-btn ui-btn--ghost w-full whitespace-nowrap">
                       Eliminar OC
                     </button>
                   </form>
@@ -171,18 +181,23 @@ export default async function PurchaseOrderDetailPage({
               </>
             ) : null}
 
-            <a href={pdfPathWithToken} target="_blank" rel="noopener noreferrer" className="ui-btn ui-btn--ghost">
+            <a
+              href={pdfPathWithToken}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="ui-btn ui-btn--ghost w-full whitespace-nowrap"
+            >
               Descargar PDF OC
             </a>
 
-            <CopyPoMessageButton message={messageToSupplier} />
+            <CopyPoMessageButton message={messageToSupplier} className="w-full whitespace-nowrap" />
 
             {canReceiveInOrigo ? (
               <a
                 href={receiveInOrigoHref.toString()}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="ui-btn ui-btn--ghost"
+                className="ui-btn ui-btn--ghost w-full whitespace-nowrap"
               >
                 Recibir en Origo
               </a>
@@ -203,9 +218,9 @@ export default async function PurchaseOrderDetailPage({
         ) : null}
       </section>
 
-      <section className="ui-panel max-w-3xl space-y-4">
+      <section className="ui-panel space-y-4">
         <div className="ui-h3">Cabecera</div>
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-3 lg:grid-cols-2">
           <div className="ui-panel-soft p-3">
             <div className="ui-caption">Proveedor</div>
             <div className="font-semibold">{supplierName}</div>
@@ -232,13 +247,18 @@ export default async function PurchaseOrderDetailPage({
       </section>
 
       <section className="ui-panel overflow-x-auto">
-        <div className="ui-h3 mb-4">Lineas</div>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <div className="ui-h3">Lineas</div>
+          <span className="ui-chip">{lineItems.length} linea(s) registradas</span>
+        </div>
         <div className="mb-4 rounded-lg border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3 text-sm text-[var(--ui-muted)]">
           Cantidad = unidad operativa de compra. Cantidad base y costo base son equivalencias normalizadas
           para comparar insumos entre si (por ejemplo, kg a g).
         </div>
         {lineItems.length === 0 ? (
-          <p className="ui-body-muted">Sin lineas registradas.</p>
+          <div className="ui-panel-soft p-4">
+            <p className="ui-body-muted">Sin lineas registradas.</p>
+          </div>
         ) : (
           <Table>
             <TableHead>

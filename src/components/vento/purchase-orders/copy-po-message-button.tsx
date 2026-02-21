@@ -4,9 +4,10 @@ import { useState } from "react";
 
 type Props = {
   message: string;
+  className?: string;
 };
 
-export function CopyPoMessageButton({ message }: Props) {
+export function CopyPoMessageButton({ message, className }: Props) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
@@ -20,7 +21,7 @@ export function CopyPoMessageButton({ message }: Props) {
   };
 
   return (
-    <button type="button" className="ui-btn ui-btn--ghost" onClick={handleCopy}>
+    <button type="button" className={`ui-btn ui-btn--ghost ${className ?? ""}`} onClick={handleCopy}>
       {copied ? "Mensaje copiado" : "Copiar mensaje proveedor"}
     </button>
   );
