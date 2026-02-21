@@ -132,7 +132,7 @@ export async function GET(
   });
   const logoPngBytes = await loadBrandLogoPngBytes();
 
-  const brandPrimary = process.env.ORIGO_PO_BRAND_PRIMARY ?? "#46CDA0";
+  const brandPrimary = process.env.ORIGO_PO_BRAND_PRIMARY ?? "#35BE92";
 
   const brand = {
     businessName: process.env.ORIGO_PO_BRAND_NAME ?? "Vento Group",

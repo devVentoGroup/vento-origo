@@ -333,7 +333,7 @@ function buildPurchaseOrderPdfObjects(pageStreams: string[], imageResource?: Pdf
 export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array {
   const primaryColor = parseHexColor(
     input.brand.headerColor ?? input.brand.primaryColor,
-    [70, 205, 160]
+    [53, 190, 146]
   );
   const softColor = parseHexColor(input.brand.softColor, [236, 255, 247]);
   const textColor = parseHexColor(input.brand.textColor, [11, 42, 31]);
