@@ -132,14 +132,16 @@ export async function GET(
   });
   const logoPngBytes = await loadBrandLogoPngBytes();
 
+  const brandPrimary = process.env.ORIGO_PO_BRAND_PRIMARY ?? "#46CDA0";
+
   const brand = {
     businessName: process.env.ORIGO_PO_BRAND_NAME ?? "Vento Group",
     documentTitle: process.env.ORIGO_PO_BRAND_TITLE ?? "Orden de compra",
     logoText: process.env.ORIGO_PO_BRAND_LOGO_TEXT ?? "VG",
     logoPngBytes,
-    primaryColor: process.env.ORIGO_PO_BRAND_PRIMARY ?? "#10B981",
+    primaryColor: brandPrimary,
     waveColor: process.env.ORIGO_PO_BRAND_WAVE ?? "#059669",
-    headerColor: process.env.ORIGO_PO_BRAND_HEADER ?? "#0B5B43",
+    headerColor: process.env.ORIGO_PO_BRAND_HEADER ?? brandPrimary,
     softColor: process.env.ORIGO_PO_BRAND_SURFACE ?? "#ECFFF7",
     textColor: process.env.ORIGO_PO_BRAND_TEXT ?? "#0B2A1F",
     mutedColor: process.env.ORIGO_PO_BRAND_MUTED ?? "#64748B",
