@@ -13,6 +13,7 @@ type ProductOption = {
   unit?: string | null;
   stock_unit_code?: string | null;
   cost?: number | null;
+  supplier_ids?: string[] | null;
 };
 type LineItemValue = {
   product_id?: string;
@@ -45,6 +46,7 @@ const STEPS: Step[] = [
   { id: "lineas", title: "Lineas", objective: "Agrega productos, cantidades y costo unitario." },
   { id: "resumen", title: "Resumen", objective: "Valida datos y confirma guardado." },
 ];
+const ALL_SUPPLIERS_VALUE = "__all__";
 
 function toStr(v: unknown): string {
   return String(v ?? "").trim();
@@ -85,10 +87,13 @@ export function PurchaseOrderGuidedForm({
   defaultValues,
 }: PurchaseOrderGuidedFormProps) {
   const [stepId, setStepId] = useState(STEPS[0].id);
-  const [supplierId, setSupplierId] = useState(toStr(defaultValues?.supplier_id));
+  const [supplierId, setSupplierId] = useState(
+    toStr(defaultValues?.supplier_id) || ALL_SUPPLIERS_VALUE
+  );
   const [siteId, setSiteId] = useState(toStr(defaultValues?.site_id));
   const [expectedAt, setExpectedAt] = useState(toStr(defaultValues?.expected_at));
   const [notes, setNotes] = useState(toStr(defaultValues?.notes));
+  const [productSearch, setProductSearch] = useState("");
   const [lineRows, setLineRows] = useState<LineRow[]>(() => {
     const incoming = defaultValues?.lines ?? [];
     if (!incoming.length) return [makeEmptyLine()];
@@ -105,7 +110,8 @@ export function PurchaseOrderGuidedForm({
   const atFirstStep = currentIndex === 0;
   const atLastStep = currentIndex === STEPS.length - 1;
 
-  const isHeaderComplete = Boolean(supplierId) && Boolean(siteId);
+  const selectedSupplierId = supplierId === ALL_SUPPLIERS_VALUE ? "" : supplierId;
+  const isHeaderComplete = Boolean(selectedSupplierId) && Boolean(siteId);
   const validLineCount = useMemo(
     () =>
       lineRows.filter((line) => {
@@ -118,6 +124,21 @@ export function PurchaseOrderGuidedForm({
   const productById = useMemo(() => {
     return new Map(products.map((product) => [product.id, product]));
   }, [products]);
+  const supplierFilteredProducts = useMemo(() => {
+    if (!selectedSupplierId) return products;
+    return products.filter((product) =>
+      Array.isArray(product.supplier_ids) && product.supplier_ids.includes(selectedSupplierId)
+    );
+  }, [products, selectedSupplierId]);
+  const visibleProducts = useMemo(() => {
+    const query = productSearch.trim().toLowerCase();
+    if (!query) return supplierFilteredProducts;
+    return supplierFilteredProducts.filter((product) => {
+      const sku = String(product.sku ?? "").toLowerCase();
+      const name = String(product.name ?? "").toLowerCase();
+      return name.includes(query) || sku.includes(query);
+    });
+  }, [productSearch, supplierFilteredProducts]);
 
   const summaryTotal = useMemo(
     () =>
@@ -164,7 +185,7 @@ export function PurchaseOrderGuidedForm({
 
   return (
     <form action={action} className="space-y-4">
-      <input type="hidden" name="supplier_id" value={supplierId} />
+      <input type="hidden" name="supplier_id" value={selectedSupplierId} />
       <input type="hidden" name="site_id" value={siteId} />
       <input type="hidden" name="expected_at" value={expectedAt} />
       <input type="hidden" name="notes" value={notes} />
@@ -220,11 +241,14 @@ export function PurchaseOrderGuidedForm({
           <label>
             <span className="ui-label">Proveedor *</span>
             <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)} className="ui-input mt-1" required>
-              <option value="">Seleccionar...</option>
+              <option value={ALL_SUPPLIERS_VALUE}>Todos los proveedores</option>
               {suppliers.map((s) => (
                 <option key={s.id} value={s.id}>{s.name}</option>
               ))}
             </select>
+            <div className="mt-1 text-xs text-[var(--ui-muted)]">
+              Selecciona un proveedor para ver solo sus insumos en las lineas.
+            </div>
           </label>
           <label>
             <span className="ui-label">Sede *</span>
@@ -262,6 +286,22 @@ export function PurchaseOrderGuidedForm({
             </button>
           </div>
         </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label>
+            <span className="ui-label">Buscar insumo</span>
+            <input
+              value={productSearch}
+              onChange={(e) => setProductSearch(e.target.value)}
+              placeholder="Nombre o SKU"
+              className="ui-input mt-1"
+            />
+          </label>
+          <div className="ui-panel-soft p-3 text-sm text-[var(--ui-muted)]">
+            {selectedSupplierId
+              ? `${visibleProducts.length} insumo(s) disponibles para el proveedor seleccionado.`
+              : `${visibleProducts.length} insumo(s) disponibles (todos los proveedores).`}
+          </div>
+        </div>
         <div className="space-y-3">
           {lineRows.map((line, i) => {
             const product = productById.get(line.product_id);
@@ -282,7 +322,7 @@ export function PurchaseOrderGuidedForm({
                   className="ui-input mt-1"
                 >
                   <option value="">Seleccionar...</option>
-                  {products.map((p) => (
+                  {visibleProducts.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.sku ? `${p.sku} - ` : ""}{p.name}
                     </option>
@@ -378,7 +418,7 @@ export function PurchaseOrderGuidedForm({
         </div>
         {!canSubmit ? (
           <div className="ui-alert ui-alert--warn">
-            Completa proveedor y sede para poder guardar.
+            Completa proveedor (no "Todos") y sede para poder guardar.
           </div>
         ) : null}
       </section>

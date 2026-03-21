@@ -57,6 +57,11 @@ export const config = {
 };
 
 export async function middleware(request: NextRequest) {
+  if (/^\/purchase-orders\/[^/]+\/pdf$/.test(request.nextUrl.pathname)) {
+    // Public PDF route validates access via signed token in the route handler.
+    return NextResponse.next();
+  }
+
   if (!hasSupabaseCookies(request)) {
     return withDebugHeaders(buildLoginRedirect(request), request, "no-cookies");
   }

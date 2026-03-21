@@ -24,7 +24,7 @@ export default async function NewPurchaseOrderPage({
       .select("site_id,sites(id,name)")
       .eq("employee_id", user.id)
       .eq("is_active", true),
-    supabase.from("products").select("id,name,sku,unit,stock_unit_code,cost").order("name").limit(500),
+    supabase.from("products").select("id,name,sku,unit,stock_unit_code,cost").order("name").limit(1200),
   ]);
 
   const suppliers = (suppliersRes.data ?? []) as { id: string; name: string }[];
@@ -37,6 +37,26 @@ export default async function NewPurchaseOrderPage({
     stock_unit_code: string | null;
     cost: number | null;
   }[];
+  const productIds = products.map((product) => product.id);
+  const { data: supplierLinksData } = productIds.length
+    ? await supabase
+        .from("product_suppliers")
+        .select("product_id,supplier_id,is_primary")
+        .in("product_id", productIds)
+    : { data: [] };
+  const supplierIdsByProduct = new Map<string, Set<string>>();
+  for (const row of (supplierLinksData ?? []) as Array<{ product_id: string; supplier_id: string; is_primary?: boolean | null }>) {
+    const productId = String(row.product_id ?? "").trim();
+    const supplierId = String(row.supplier_id ?? "").trim();
+    if (!productId || !supplierId) continue;
+    const current = supplierIdsByProduct.get(productId) ?? new Set<string>();
+    current.add(supplierId);
+    supplierIdsByProduct.set(productId, current);
+  }
+  const productsWithSupplierLinks = products.map((product) => ({
+    ...product,
+    supplier_ids: Array.from(supplierIdsByProduct.get(product.id) ?? []),
+  }));
 
   const sp = (await searchParams) ?? {};
   const errorMsg = sp.error;
@@ -108,7 +128,7 @@ export default async function NewPurchaseOrderPage({
         cancelHref="/purchase-orders"
         suppliers={suppliers}
         sites={sites}
-        products={products}
+        products={productsWithSupplierLinks}
         defaultValues={prefillDefaults}
       />
     </div>
