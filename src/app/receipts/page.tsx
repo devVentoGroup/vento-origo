@@ -29,11 +29,20 @@ type ProfileRow = {
   product_id: string;
   track_inventory: boolean;
   costing_mode: "auto_primary_supplier" | "manual" | null;
+  lot_tracking: boolean;
+  expiry_tracking: boolean;
 };
 
 type ProductProfileWithProduct = {
   product_id: string;
+  lot_tracking?: boolean | null;
+  expiry_tracking?: boolean | null;
   products: ProductRow | ProductRow[] | null;
+};
+
+type ProductFormRow = ProductRow & {
+  lot_tracking: boolean;
+  expiry_tracking: boolean;
 };
 
 type SupplierRow = {
@@ -175,6 +184,8 @@ async function createReceipt(formData: FormData) {
     .getAll("item_purchase_order_item_id")
     .map((value) => String(value).trim());
   const lineNotes = formData.getAll("item_notes").map((value) => String(value).trim());
+  const lotNumbers = formData.getAll("item_lot_number").map((value) => String(value).trim());
+  const expiryDates = formData.getAll("item_expiry_date").map((value) => String(value).trim());
 
   const productLookupIds = Array.from(new Set(productIds.filter(Boolean)));
   const { data: productRowsData } = productLookupIds.length
@@ -188,7 +199,7 @@ async function createReceipt(formData: FormData) {
   const { data: profileRowsData } = productLookupIds.length
     ? await supabase
         .from("product_inventory_profiles")
-        .select("product_id,track_inventory,costing_mode")
+        .select("product_id,track_inventory,costing_mode,lot_tracking,expiry_tracking")
         .in("product_id", productLookupIds)
     : { data: [] as ProfileRow[] };
   const profileMap = new Map(((profileRowsData ?? []) as ProfileRow[]).map((row) => [row.product_id, row]));
@@ -200,10 +211,22 @@ async function createReceipt(formData: FormData) {
       if (!Number.isFinite(quantityReceived) || quantityReceived <= 0) return null;
 
       const product = productMap.get(productId);
+      const profile = profileMap.get(productId);
       const stockUnitCode = String(product?.stock_unit_code ?? product?.unit ?? "un").trim().toLowerCase();
       const defaultCost = Number(product?.cost ?? 0);
       const unitCostRaw = Number(unitCosts[index] ?? 0);
       const stockUnitCost = unitCostRaw > 0 ? unitCostRaw : defaultCost;
+      const lotNumber = lotNumbers[index] || null;
+      const expiryDate = expiryDates[index] || null;
+
+      if (profile?.lot_tracking && !lotNumber) {
+        redirect("/receipts?error=" + encodeURIComponent("Hay items que requieren lote."));
+      }
+      if (profile?.expiry_tracking && !expiryDate) {
+        redirect(
+          "/receipts?error=" + encodeURIComponent("Hay items que requieren fecha de vencimiento.")
+        );
+      }
 
       return {
         product_id: productId,
@@ -215,10 +238,11 @@ async function createReceipt(formData: FormData) {
         line_total_cost: roundQuantity(quantityReceived * (stockUnitCost > 0 ? stockUnitCost : 0), 6),
         purchase_order_item_id: poItemIds[index] || null,
         cost_source: unitCostRaw > 0 ? "manual" : "fallback_product_cost",
+        lot_number: lotNumber,
+        expiry_date: expiryDate,
         notes: lineNotes[index] || null,
         apply_auto_cost:
-          Boolean(profileMap.get(productId)?.track_inventory) &&
-          profileMap.get(productId)?.costing_mode === "auto_primary_supplier",
+          Boolean(profile?.track_inventory) && profile?.costing_mode === "auto_primary_supplier",
       };
     })
     .filter((row): row is NonNullable<typeof row> => Boolean(row));
@@ -291,6 +315,8 @@ async function createReceipt(formData: FormData) {
     cost_source: item.cost_source,
     currency: "COP",
     purchase_order_item_id: item.purchase_order_item_id,
+    lot_number: item.lot_number,
+    expiry_date: item.expiry_date,
     notes: item.notes,
   }));
   const { error: entryItemsErr } = await supabase.from("inventory_entry_items").insert(entryItemRows);
@@ -526,7 +552,7 @@ export default async function ReceiptsPage({
       .limit(300),
     supabase
       .from("product_inventory_profiles")
-      .select("product_id,products(id,name,unit,stock_unit_code,cost)")
+      .select("product_id,lot_tracking,expiry_tracking,products(id,name,unit,stock_unit_code,cost)")
       .eq("track_inventory", true)
       .in("inventory_kind", ["ingredient", "finished", "resale", "packaging"])
       .order("name", { foreignTable: "products", ascending: true })
@@ -541,8 +567,16 @@ export default async function ReceiptsPage({
 
   const suppliers = (suppliersData ?? []) as SupplierRow[];
   const products = ((productsData ?? []) as ProductProfileWithProduct[])
-    .map((row) => (Array.isArray(row.products) ? row.products[0] ?? null : row.products))
-    .filter((row): row is ProductRow => Boolean(row));
+    .map((row) => {
+      const product = Array.isArray(row.products) ? row.products[0] ?? null : row.products;
+      if (!product) return null;
+      return {
+        ...product,
+        lot_tracking: Boolean(row.lot_tracking),
+        expiry_tracking: Boolean(row.expiry_tracking),
+      } satisfies ProductFormRow;
+    })
+    .filter((row): row is ProductFormRow => Boolean(row));
   const locations = (locationsData ?? []) as LocationRow[];
 
   const purchaseOrderId = String(sp.purchase_order_id ?? "").trim();
@@ -634,7 +668,6 @@ export default async function ReceiptsPage({
             Ver ordenes de compra
           </Link>
         </div>
-        {errorMsg ? <div className="ui-alert ui-alert--error">Error: {errorMsg}</div> : null}
         {okMsg ? <div className="ui-alert ui-alert--success">Recepcion registrada correctamente.</div> : null}
       </div>
 
@@ -655,6 +688,8 @@ export default async function ReceiptsPage({
         prefillInvoiceNumber={prefillInvoiceNumber}
         prefillNotes={prefillNotes}
         prefillRows={prefillRows}
+        serverErrorMessage={errorMsg}
+        submitSuccess={Boolean(okMsg)}
       />
 
       <div className="ui-panel">

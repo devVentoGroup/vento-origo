@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { formatPurchaseOrderRef } from "@/lib/purchase-orders/reference";
 
@@ -15,6 +15,8 @@ type ProductRow = {
   unit: string | null;
   stock_unit_code: string | null;
   cost: number | null;
+  lot_tracking: boolean;
+  expiry_tracking: boolean;
 };
 
 type LocationRow = {
@@ -43,6 +45,8 @@ type ReceiptLine = {
   locationId: string;
   quantity: string;
   unitCost: string;
+  lotNumber: string;
+  expiryDate: string;
   notes: string;
   purchaseOrderItemId: string;
 };
@@ -59,6 +63,8 @@ type Props = {
   prefillInvoiceNumber: string;
   prefillNotes: string;
   prefillRows: PrefillRow[];
+  serverErrorMessage?: string;
+  submitSuccess?: boolean;
 };
 
 function buildInitialRows(params: {
@@ -72,6 +78,8 @@ function buildInitialRows(params: {
         locationId: params.defaultLocationId,
         quantity: "",
         unitCost: "",
+        lotNumber: "",
+        expiryDate: "",
         notes: "",
         purchaseOrderItemId: "",
       },
@@ -83,6 +91,8 @@ function buildInitialRows(params: {
     locationId: params.defaultLocationId,
     quantity: String(row.quantity),
     unitCost: row.unitCost > 0 ? String(row.unitCost) : "",
+    lotNumber: "",
+    expiryDate: "",
     notes: "",
     purchaseOrderItemId: row.purchaseOrderItemId,
   }));
@@ -100,6 +110,8 @@ export function ReceiptForm({
   prefillInvoiceNumber,
   prefillNotes,
   prefillRows,
+  serverErrorMessage = "",
+  submitSuccess = false,
 }: Props) {
   const router = useRouter();
   const pathname = usePathname();
@@ -113,6 +125,7 @@ export function ReceiptForm({
   const [lines, setLines] = useState<ReceiptLine[]>(
     buildInitialRows({ prefillRows, defaultLocationId })
   );
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   const poOptions = useMemo(
     () =>
@@ -123,6 +136,63 @@ export function ReceiptForm({
     [purchaseOrders]
   );
 
+  const productMap = useMemo(() => {
+    const map = new Map<string, ProductRow>();
+    for (const product of products) map.set(product.id, product);
+    return map;
+  }, [products]);
+
+  const storageKey = useMemo(() => `origo:receipts:form:${siteId}`, [siteId]);
+
+  useEffect(() => {
+    if (submitSuccess) {
+      window.sessionStorage.removeItem(storageKey);
+      return;
+    }
+    const raw = window.sessionStorage.getItem(storageKey);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as {
+        supplierId?: string;
+        invoiceNumber?: string;
+        notes?: string;
+        receivedAt?: string;
+        lines?: ReceiptLine[];
+      };
+      if (parsed.supplierId != null) setSupplierId(parsed.supplierId);
+      if (parsed.invoiceNumber != null) setInvoiceNumber(parsed.invoiceNumber);
+      if (parsed.notes != null) setNotes(parsed.notes);
+      if (parsed.receivedAt != null) setReceivedAt(parsed.receivedAt);
+      if (Array.isArray(parsed.lines) && parsed.lines.length) {
+        setLines(
+          parsed.lines.map((line) => ({
+            productId: line.productId ?? "",
+            locationId: line.locationId ?? defaultLocationId,
+            quantity: line.quantity ?? "",
+            unitCost: line.unitCost ?? "",
+            lotNumber: line.lotNumber ?? "",
+            expiryDate: line.expiryDate ?? "",
+            notes: line.notes ?? "",
+            purchaseOrderItemId: line.purchaseOrderItemId ?? "",
+          }))
+        );
+      }
+    } catch {
+      // noop
+    }
+  }, [defaultLocationId, storageKey, submitSuccess]);
+
+  useEffect(() => {
+    const payload = {
+      supplierId,
+      invoiceNumber,
+      notes,
+      receivedAt,
+      lines,
+    };
+    window.sessionStorage.setItem(storageKey, JSON.stringify(payload));
+  }, [invoiceNumber, lines, notes, receivedAt, storageKey, supplierId]);
+
   const addLine = () => {
     setLines((prev) => [
       ...prev,
@@ -131,6 +201,8 @@ export function ReceiptForm({
         locationId: defaultLocationId,
         quantity: "",
         unitCost: "",
+        lotNumber: "",
+        expiryDate: "",
         notes: "",
         purchaseOrderItemId: "",
       },
@@ -153,8 +225,46 @@ export function ReceiptForm({
     router.push(qs ? `${pathname}?${qs}` : pathname);
   };
 
+  const handleClientValidation = (event: React.FormEvent<HTMLFormElement>) => {
+    const nextErrors: Record<string, string> = {};
+    if (!supplierId) nextErrors["supplier_id"] = "Selecciona un proveedor.";
+
+    const hasAtLeastOneValidLine = lines.some((line) => {
+      const qty = Number(line.quantity || 0);
+      return Boolean(line.productId) && Number.isFinite(qty) && qty > 0;
+    });
+    if (!hasAtLeastOneValidLine) {
+      nextErrors["lines"] = "Agrega al menos un item con producto y cantidad mayor a 0.";
+    }
+
+    lines.forEach((line, index) => {
+      const qty = Number(line.quantity || 0);
+      const hasQty = Number.isFinite(qty) && qty > 0;
+      const hasProduct = Boolean(line.productId);
+      const shouldValidateLine = hasQty || hasProduct;
+      if (!shouldValidateLine) return;
+
+      if (!hasProduct) nextErrors[`line_${index}_productId`] = "Selecciona producto.";
+      if (!hasQty) nextErrors[`line_${index}_quantity`] = "Ingresa cantidad valida.";
+      if (!line.locationId) nextErrors[`line_${index}_locationId`] = "Selecciona LOC.";
+
+      const product = line.productId ? productMap.get(line.productId) : null;
+      if (product?.lot_tracking && !line.lotNumber.trim()) {
+        nextErrors[`line_${index}_lotNumber`] = "Este producto requiere lote.";
+      }
+      if (product?.expiry_tracking && !line.expiryDate.trim()) {
+        nextErrors[`line_${index}_expiryDate`] = "Este producto requiere vencimiento.";
+      }
+    });
+
+    setFieldErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0) {
+      event.preventDefault();
+    }
+  };
+
   return (
-    <form action={action} className="ui-panel space-y-4">
+    <form action={action} className="ui-panel space-y-4" onSubmit={handleClientValidation}>
       <input type="hidden" name="site_id" value={siteId} />
       <input type="hidden" name="purchase_order_id" value={selectedPurchaseOrderId} />
 
@@ -191,6 +301,9 @@ export function ReceiptForm({
               </option>
             ))}
           </select>
+          {fieldErrors["supplier_id"] ? (
+            <span className="text-xs text-rose-600">{fieldErrors["supplier_id"]}</span>
+          ) : null}
         </label>
 
         <label className="flex flex-col gap-1">
@@ -236,8 +349,11 @@ export function ReceiptForm({
       </div>
 
       <div className="space-y-3">
+        {fieldErrors["lines"] ? (
+          <p className="text-sm text-rose-600">{fieldErrors["lines"]}</p>
+        ) : null}
         {lines.map((line, index) => (
-          <div key={`line-${index}`} className="ui-panel-soft grid gap-3 md:grid-cols-6">
+          <div key={`line-${index}`} className="ui-panel-soft grid gap-3 md:grid-cols-8">
             <label className="md:col-span-2">
               <span className="ui-label">Producto</span>
               <select
@@ -258,6 +374,17 @@ export function ReceiptForm({
                 name="item_purchase_order_item_id"
                 value={line.purchaseOrderItemId}
               />
+              {line.productId ? (
+                <p className="mt-1 text-xs text-[var(--ui-muted)]">
+                  {productMap.get(line.productId)?.lot_tracking ? "Requiere lote" : "Sin lote"} ·{" "}
+                  {productMap.get(line.productId)?.expiry_tracking
+                    ? "Requiere vencimiento"
+                    : "Sin vencimiento"}
+                </p>
+              ) : null}
+              {fieldErrors[`line_${index}_productId`] ? (
+                <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_productId`]}</p>
+              ) : null}
             </label>
 
             <label>
@@ -275,6 +402,9 @@ export function ReceiptForm({
                   </option>
                 ))}
               </select>
+              {fieldErrors[`line_${index}_locationId`] ? (
+                <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_locationId`]}</p>
+              ) : null}
             </label>
 
             <label>
@@ -288,6 +418,9 @@ export function ReceiptForm({
                 value={line.quantity}
                 onChange={(e) => updateLine(index, { quantity: e.target.value })}
               />
+              {fieldErrors[`line_${index}_quantity`] ? (
+                <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_quantity`]}</p>
+              ) : null}
             </label>
 
             <label>
@@ -301,6 +434,36 @@ export function ReceiptForm({
                 value={line.unitCost}
                 onChange={(e) => updateLine(index, { unitCost: e.target.value })}
               />
+            </label>
+
+            <label>
+              <span className="ui-label">Lote</span>
+              <input
+                name="item_lot_number"
+                className="ui-input mt-1"
+                placeholder="Opcional"
+                value={line.lotNumber}
+                onChange={(e) => updateLine(index, { lotNumber: e.target.value })}
+                required={Boolean(line.productId && productMap.get(line.productId)?.lot_tracking)}
+              />
+              {fieldErrors[`line_${index}_lotNumber`] ? (
+                <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_lotNumber`]}</p>
+              ) : null}
+            </label>
+
+            <label>
+              <span className="ui-label">Vencimiento</span>
+              <input
+                name="item_expiry_date"
+                className="ui-input mt-1"
+                type="date"
+                value={line.expiryDate}
+                onChange={(e) => updateLine(index, { expiryDate: e.target.value })}
+                required={Boolean(line.productId && productMap.get(line.productId)?.expiry_tracking)}
+              />
+              {fieldErrors[`line_${index}_expiryDate`] ? (
+                <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_expiryDate`]}</p>
+              ) : null}
             </label>
 
             <label>
@@ -329,6 +492,9 @@ export function ReceiptForm({
       </div>
 
       <div className="flex justify-end">
+        {serverErrorMessage ? (
+          <p className="mr-auto text-sm text-rose-600">{serverErrorMessage}</p>
+        ) : null}
         <button type="submit" className="ui-btn ui-btn--brand">
           Registrar recepcion
         </button>
