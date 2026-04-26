@@ -418,7 +418,7 @@ export function PurchaseOrderGuidedForm({
         </div>
         {!canSubmit ? (
           <div className="ui-alert ui-alert--warn">
-            Completa proveedor (no "Todos") y sede para poder guardar.
+            Completa proveedor (no &quot;Todos&quot;) y sede para poder guardar.
           </div>
         ) : null}
       </section>

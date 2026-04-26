@@ -51,6 +51,14 @@ type ReceiptLine = {
   purchaseOrderItemId: string;
 };
 
+type StoredReceiptDraft = {
+  supplierId?: string;
+  invoiceNumber?: string;
+  notes?: string;
+  receivedAt?: string;
+  lines?: ReceiptLine[];
+};
+
 type Props = {
   action: (formData: FormData) => void | Promise<void>;
   siteId: string;
@@ -98,6 +106,35 @@ function buildInitialRows(params: {
   }));
 }
 
+function normalizeStoredLines(lines: ReceiptLine[] | undefined, defaultLocationId: string) {
+  if (!Array.isArray(lines) || !lines.length) return null;
+  return lines.map((line) => ({
+    productId: line.productId ?? "",
+    locationId: line.locationId ?? defaultLocationId,
+    quantity: line.quantity ?? "",
+    unitCost: line.unitCost ?? "",
+    lotNumber: line.lotNumber ?? "",
+    expiryDate: line.expiryDate ?? "",
+    notes: line.notes ?? "",
+    purchaseOrderItemId: line.purchaseOrderItemId ?? "",
+  }));
+}
+
+function readStoredDraft(storageKey: string, defaultLocationId: string): StoredReceiptDraft | null {
+  if (typeof window === "undefined") return null;
+  const raw = window.sessionStorage.getItem(storageKey);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as StoredReceiptDraft;
+    return {
+      ...parsed,
+      lines: normalizeStoredLines(parsed.lines, defaultLocationId) ?? undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function ReceiptForm({
   action,
   siteId,
@@ -117,13 +154,15 @@ export function ReceiptForm({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const defaultLocationId = locations[0]?.id ?? "";
+  const storageKey = `origo:receipts:form:${siteId}`;
+  const storedDraft = readStoredDraft(storageKey, defaultLocationId);
 
-  const [supplierId, setSupplierId] = useState(prefillSupplierId);
-  const [invoiceNumber, setInvoiceNumber] = useState(prefillInvoiceNumber);
-  const [notes, setNotes] = useState(prefillNotes);
-  const [receivedAt, setReceivedAt] = useState("");
+  const [supplierId, setSupplierId] = useState(storedDraft?.supplierId ?? prefillSupplierId);
+  const [invoiceNumber, setInvoiceNumber] = useState(storedDraft?.invoiceNumber ?? prefillInvoiceNumber);
+  const [notes, setNotes] = useState(storedDraft?.notes ?? prefillNotes);
+  const [receivedAt, setReceivedAt] = useState(storedDraft?.receivedAt ?? "");
   const [lines, setLines] = useState<ReceiptLine[]>(
-    buildInitialRows({ prefillRows, defaultLocationId })
+    storedDraft?.lines ?? buildInitialRows({ prefillRows, defaultLocationId })
   );
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
@@ -142,45 +181,11 @@ export function ReceiptForm({
     return map;
   }, [products]);
 
-  const storageKey = useMemo(() => `origo:receipts:form:${siteId}`, [siteId]);
-
   useEffect(() => {
     if (submitSuccess) {
       window.sessionStorage.removeItem(storageKey);
-      return;
     }
-    const raw = window.sessionStorage.getItem(storageKey);
-    if (!raw) return;
-    try {
-      const parsed = JSON.parse(raw) as {
-        supplierId?: string;
-        invoiceNumber?: string;
-        notes?: string;
-        receivedAt?: string;
-        lines?: ReceiptLine[];
-      };
-      if (parsed.supplierId != null) setSupplierId(parsed.supplierId);
-      if (parsed.invoiceNumber != null) setInvoiceNumber(parsed.invoiceNumber);
-      if (parsed.notes != null) setNotes(parsed.notes);
-      if (parsed.receivedAt != null) setReceivedAt(parsed.receivedAt);
-      if (Array.isArray(parsed.lines) && parsed.lines.length) {
-        setLines(
-          parsed.lines.map((line) => ({
-            productId: line.productId ?? "",
-            locationId: line.locationId ?? defaultLocationId,
-            quantity: line.quantity ?? "",
-            unitCost: line.unitCost ?? "",
-            lotNumber: line.lotNumber ?? "",
-            expiryDate: line.expiryDate ?? "",
-            notes: line.notes ?? "",
-            purchaseOrderItemId: line.purchaseOrderItemId ?? "",
-          }))
-        );
-      }
-    } catch {
-      // noop
-    }
-  }, [defaultLocationId, storageKey, submitSuccess]);
+  }, [storageKey, submitSuccess]);
 
   useEffect(() => {
     const payload = {
