@@ -26,6 +26,16 @@ type LocationRow = {
   description: string | null;
 };
 
+type LocationPositionRow = {
+  id: string;
+  location_id: string;
+  parent_position_id: string | null;
+  code: string;
+  name: string;
+  kind: string;
+  sort_order: number | null;
+};
+
 type PurchaseOrderOption = {
   id: string;
   created_at: string | null;
@@ -43,6 +53,7 @@ type PrefillRow = {
 type ReceiptLine = {
   productId: string;
   locationId: string;
+  positionId: string;
   quantity: string;
   unitCost: string;
   lotNumber: string;
@@ -66,6 +77,7 @@ type Props = {
   suppliers: SupplierRow[];
   products: ProductRow[];
   locations: LocationRow[];
+  locationPositions?: LocationPositionRow[];
   purchaseOrders: PurchaseOrderOption[];
   selectedPurchaseOrderId: string;
   prefillSupplierId: string;
@@ -85,6 +97,7 @@ function buildInitialRows(params: {
       {
         productId: "",
         locationId: params.defaultLocationId,
+        positionId: "",
         quantity: "",
         unitCost: "",
         lotNumber: "",
@@ -98,6 +111,7 @@ function buildInitialRows(params: {
   return params.prefillRows.map((row) => ({
     productId: row.productId,
     locationId: params.defaultLocationId,
+    positionId: "",
     quantity: String(row.quantity),
     unitCost: row.unitCost > 0 ? String(row.unitCost) : "",
     lotNumber: "",
@@ -112,6 +126,7 @@ function normalizeStoredLines(lines: ReceiptLine[] | undefined, defaultLocationI
   return lines.map((line) => ({
     productId: line.productId ?? "",
     locationId: line.locationId ?? defaultLocationId,
+    positionId: line.positionId ?? "",
     quantity: line.quantity ?? "",
     unitCost: line.unitCost ?? "",
     lotNumber: line.lotNumber ?? "",
@@ -135,6 +150,37 @@ function readStoredDraft(storageKey: string, defaultLocationId: string): StoredR
     return null;
   }
 }
+const RECEIPT_LOCATION_LABELS_BY_CODE: Record<string, string> = {
+  "LOC-CP-BOD-MAIN": "Bodega principal",
+  "LOC-CP-N3P-MAIN": "Nevera 3 puertas",
+  "LOC-CP-FRIO-MAIN": "Cuarto de enfriamiento",
+  "LOC-CP-CONG-MAIN": "Cuarto de congelación",
+  "LOC-CP-PROD-COC-01": "Operación · Cocina caliente",
+  "LOC-CP-PROD-PAN-01": "Operación · Galletería y panadería",
+  "LOC-CP-PROD-REP-01": "Operación · Repostería",
+};
+
+function formatReceiptLocationLabel(location: LocationRow) {
+  const code = String(location.code ?? "").trim();
+  const description = String(location.description ?? "").trim();
+  const zone = String(location.zone ?? "").trim();
+  const friendlyLabel = code ? RECEIPT_LOCATION_LABELS_BY_CODE[code] : "";
+
+  if (friendlyLabel) return friendlyLabel;
+  if (description) return description;
+  if (zone) return zone;
+  if (code) return code;
+
+  return location.id;
+}
+function formatLocationPositionLabel(position: LocationPositionRow) {
+  const name = String(position.name || position.code || position.id).trim();
+  const kind = String(position.kind || "").trim();
+
+  if (!kind) return name;
+
+  return `${name} · ${kind}`;
+}
 
 export function ReceiptForm({
   action,
@@ -142,6 +188,7 @@ export function ReceiptForm({
   suppliers,
   products,
   locations,
+  locationPositions = [],
   purchaseOrders,
   selectedPurchaseOrderId,
   prefillSupplierId,
@@ -177,12 +224,39 @@ export function ReceiptForm({
       })),
     [purchaseOrders]
   );
+  const hasPurchaseOrderOptions = poOptions.length > 0;
 
   const productMap = useMemo(() => {
     const map = new Map<string, ProductRow>();
     for (const product of products) map.set(product.id, product);
     return map;
   }, [products]);
+
+  const positionsByLocationId = useMemo(() => {
+    const map = new Map<string, LocationPositionRow[]>();
+
+    for (const position of locationPositions) {
+      const rows = map.get(position.location_id) ?? [];
+      rows.push(position);
+      map.set(position.location_id, rows);
+    }
+
+    for (const rows of map.values()) {
+      rows.sort((a, b) => {
+        const aOrder = typeof a.sort_order === "number" ? a.sort_order : Number.MAX_SAFE_INTEGER;
+        const bOrder = typeof b.sort_order === "number" ? b.sort_order : Number.MAX_SAFE_INTEGER;
+
+        if (aOrder !== bOrder) return aOrder - bOrder;
+
+        return formatLocationPositionLabel(a).localeCompare(formatLocationPositionLabel(b), "es", {
+          numeric: true,
+          sensitivity: "base",
+        });
+      });
+    }
+
+    return map;
+  }, [locationPositions]);
 
   useEffect(() => {
     if (submitSuccess) {
@@ -208,6 +282,7 @@ export function ReceiptForm({
       {
         productId: "",
         locationId: defaultLocationId,
+        positionId: "",
         quantity: "",
         unitCost: "",
         lotNumber: "",
@@ -283,21 +358,30 @@ export function ReceiptForm({
       <input type="hidden" name="emergency_reason" value={emergencyReason} />
 
       <div className="grid gap-3 md:grid-cols-4">
-        <label className="flex flex-col gap-1 md:col-span-2">
-          <span className="ui-label">Orden de compra</span>
-          <select
-            className="ui-input"
-            value={selectedPurchaseOrderId}
-            onChange={(e) => onPurchaseOrderChange(e.target.value)}
-          >
-            <option value="">Emergencia / sin orden de compra</option>
-            {poOptions.map((po) => (
-              <option key={po.value} value={po.value}>
-                {po.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        {hasPurchaseOrderOptions ? (
+          <label className="flex flex-col gap-1 md:col-span-2">
+            <span className="ui-label">Orden de compra</span>
+            <select
+              className="ui-input"
+              value={selectedPurchaseOrderId}
+              onChange={(e) => onPurchaseOrderChange(e.target.value)}
+            >
+              <option value="">Emergencia / sin orden de compra</option>
+              {poOptions.map((po) => (
+                <option key={po.value} value={po.value}>
+                  {po.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <div className="md:col-span-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+            <div className="font-semibold">Emergencia / sin orden de compra</div>
+            <p className="mt-1">
+              No hay órdenes de compra activas para esta sede. Esta recepción se registrará como emergencia.
+            </p>
+          </div>
+        )}
 
         <label className="flex flex-col gap-1">
           <span className="ui-label">Proveedor</span>
@@ -321,7 +405,7 @@ export function ReceiptForm({
         </label>
 
         <label className="flex flex-col gap-1">
-          <span className="ui-label">Fecha recepcion</span>
+          <span className="ui-label">Fecha recepción</span>
           <input
             type="date"
             name="received_at"
@@ -434,17 +518,17 @@ export function ReceiptForm({
             </label>
 
             <label>
-              <span className="ui-label">LOC destino</span>
+              <span className="ui-label">Destino operativo</span>
               <select
                 name="item_location_id"
                 className="ui-input mt-1"
                 value={line.locationId}
-                onChange={(e) => updateLine(index, { locationId: e.target.value })}
+                onChange={(e) => updateLine(index, { locationId: e.target.value, positionId: "" })}
               >
                 <option value="">Seleccionar</option>
                 {locations.map((location) => (
                   <option key={location.id} value={location.id}>
-                    {location.code ?? location.description ?? location.id}
+                    {formatReceiptLocationLabel(location)}
                   </option>
                 ))}
               </select>
@@ -452,6 +536,30 @@ export function ReceiptForm({
                 <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_locationId`]}</p>
               ) : null}
             </label>
+
+            {positionsByLocationId.get(line.locationId)?.length ? (
+              <label>
+                <span className="ui-label">Ubicación interna</span>
+                <select
+                  name="item_location_position_id"
+                  className="ui-input mt-1"
+                  value={line.positionId}
+                  onChange={(e) => updateLine(index, { positionId: e.target.value })}
+                >
+                  <option value="">Sin posición interna</option>
+                  {positionsByLocationId.get(line.locationId)?.map((position) => (
+                    <option key={position.id} value={position.id}>
+                      {formatLocationPositionLabel(position)}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-[var(--ui-muted)]">
+                  Opcional. Úsalo para estantería, piso, nivel o bin.
+                </p>
+              </label>
+            ) : (
+              <input type="hidden" name="item_location_position_id" value="" />
+            )}
 
             <label>
               <span className="ui-label">Cantidad</span>

@@ -10,6 +10,19 @@ export const dynamic = "force-dynamic";
 
 const APP_ID = "origo";
 const RECEIPTS_PERMISSION = "procurement.receipts";
+const OPERATIONAL_RECEIPT_LOCATION_CODES = [
+  "LOC-CP-BOD-MAIN",
+  "LOC-CP-N3P-MAIN",
+  "LOC-CP-FRIO-MAIN",
+  "LOC-CP-CONG-MAIN",
+  "LOC-CP-PROD-COC-01",
+  "LOC-CP-PROD-PAN-01",
+  "LOC-CP-PROD-REP-01",
+];
+
+const OPERATIONAL_RECEIPT_LOCATION_ORDER = new Map(
+  OPERATIONAL_RECEIPT_LOCATION_CODES.map((code, index) => [code, index])
+);
 
 type SearchParams = {
   error?: string;
@@ -55,6 +68,16 @@ type LocationRow = {
   code: string | null;
   zone: string | null;
   description: string | null;
+};
+
+type LocationPositionRow = {
+  id: string;
+  location_id: string;
+  parent_position_id: string | null;
+  code: string;
+  name: string;
+  kind: string;
+  sort_order: number | null;
 };
 
 type PurchaseOrderRow = {
@@ -574,8 +597,10 @@ export default async function ReceiptsPage({
       .from("inventory_locations")
       .select("id,code,zone,description")
       .eq("site_id", siteId)
+      .eq("is_active", true)
+      .in("code", OPERATIONAL_RECEIPT_LOCATION_CODES)
       .order("code", { ascending: true })
-      .limit(400),
+      .limit(50),
   ]);
 
   const suppliers = (suppliersData ?? []) as SupplierRow[];
@@ -590,7 +615,52 @@ export default async function ReceiptsPage({
       } satisfies ProductFormRow;
     })
     .filter((row): row is ProductFormRow => Boolean(row));
-  const locations = (locationsData ?? []) as LocationRow[];
+  const locations = ((locationsData ?? []) as LocationRow[]).sort((a, b) => {
+    const aOrder = OPERATIONAL_RECEIPT_LOCATION_ORDER.get(String(a.code ?? "")) ?? Number.MAX_SAFE_INTEGER;
+    const bOrder = OPERATIONAL_RECEIPT_LOCATION_ORDER.get(String(b.code ?? "")) ?? Number.MAX_SAFE_INTEGER;
+
+    if (aOrder !== bOrder) return aOrder - bOrder;
+
+    return String(a.description ?? a.code ?? a.id).localeCompare(
+      String(b.description ?? b.code ?? b.id),
+      "es",
+      { numeric: true, sensitivity: "base" }
+    );
+  });
+
+  const locationIdsForPositions = locations
+    .map((location) => location.id)
+    .filter(Boolean);
+
+  const { data: locationPositionsData } =
+    locationIdsForPositions.length > 0
+      ? await supabase
+        .from("inventory_location_positions")
+        .select("id,location_id,parent_position_id,code,name,kind,sort_order")
+        .in("location_id", locationIdsForPositions)
+        .eq("is_active", true)
+        .order("sort_order", { ascending: true })
+        .order("code", { ascending: true })
+      : { data: [] as LocationPositionRow[] };
+
+  const locationOrderById = new Map(locations.map((location, index) => [location.id, index]));
+
+  const locationPositions = ((locationPositionsData ?? []) as LocationPositionRow[]).sort((a, b) => {
+    const aLocationOrder = locationOrderById.get(a.location_id) ?? Number.MAX_SAFE_INTEGER;
+    const bLocationOrder = locationOrderById.get(b.location_id) ?? Number.MAX_SAFE_INTEGER;
+
+    if (aLocationOrder !== bLocationOrder) return aLocationOrder - bLocationOrder;
+
+    const aSortOrder = typeof a.sort_order === "number" ? a.sort_order : Number.MAX_SAFE_INTEGER;
+    const bSortOrder = typeof b.sort_order === "number" ? b.sort_order : Number.MAX_SAFE_INTEGER;
+
+    if (aSortOrder !== bSortOrder) return aSortOrder - bSortOrder;
+
+    return String(a.name || a.code || a.id).localeCompare(String(b.name || b.code || b.id), "es", {
+      numeric: true,
+      sensitivity: "base",
+    });
+  });
 
   const purchaseOrderId = String(sp.purchase_order_id ?? "").trim();
   let prefillSupplierId = "";
@@ -690,6 +760,7 @@ export default async function ReceiptsPage({
         suppliers={suppliers}
         products={products}
         locations={locations}
+        locationPositions={locationPositions}
         purchaseOrders={purchaseOrders.map((po) => ({
           id: po.id,
           created_at: po.created_at,
