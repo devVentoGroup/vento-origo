@@ -157,9 +157,19 @@ async function createReceipt(formData: FormData) {
   const receivedAt = asText(formData.get("received_at"));
   const notes = asText(formData.get("notes"));
   const purchaseOrderId = asText(formData.get("purchase_order_id")) || null;
+  const emergencyReason = asText(formData.get("emergency_reason"));
+
+  const entryMode: "normal" | "emergency" = purchaseOrderId ? "normal" : "emergency";
 
   if (!supplierId) {
     redirect("/receipts?error=" + encodeURIComponent("Proveedor requerido."));
+  }
+
+  if (entryMode === "emergency" && !emergencyReason) {
+    redirect(
+      "/receipts?error=" +
+      encodeURIComponent("Motivo requerido para registrar una recepcion de emergencia.")
+    );
   }
 
   const { data: supplierRow } = await supabase
@@ -190,17 +200,17 @@ async function createReceipt(formData: FormData) {
   const productLookupIds = Array.from(new Set(productIds.filter(Boolean)));
   const { data: productRowsData } = productLookupIds.length
     ? await supabase
-        .from("products")
-        .select("id,name,unit,stock_unit_code,cost")
-        .in("id", productLookupIds)
+      .from("products")
+      .select("id,name,unit,stock_unit_code,cost")
+      .in("id", productLookupIds)
     : { data: [] as ProductRow[] };
   const productMap = new Map(((productRowsData ?? []) as ProductRow[]).map((row) => [row.id, row]));
 
   const { data: profileRowsData } = productLookupIds.length
     ? await supabase
-        .from("product_inventory_profiles")
-        .select("product_id,track_inventory,costing_mode,lot_tracking,expiry_tracking")
-        .in("product_id", productLookupIds)
+      .from("product_inventory_profiles")
+      .select("product_id,track_inventory,costing_mode,lot_tracking,expiry_tracking")
+      .in("product_id", productLookupIds)
     : { data: [] as ProfileRow[] };
   const profileMap = new Map(((profileRowsData ?? []) as ProfileRow[]).map((row) => [row.product_id, row]));
 
@@ -269,8 +279,8 @@ async function createReceipt(formData: FormData) {
       created_by: user.id,
       purchase_order_id: purchaseOrderId,
       source_app: "origo",
-      entry_mode: "normal",
-      emergency_reason: null,
+      entry_mode: entryMode,
+      emergency_reason: entryMode === "emergency" ? emergencyReason : null,
     })
     .select("id")
     .single();
@@ -285,7 +295,10 @@ async function createReceipt(formData: FormData) {
         invoice_number: invoiceNumber || null,
         received_at: receivedAt || null,
         status,
-        notes: notes || null,
+        notes:
+          entryMode === "emergency"
+            ? [notes, `Emergencia: ${emergencyReason}`].filter(Boolean).join(" | ")
+            : notes || null,
         created_by: user.id,
         purchase_order_id: purchaseOrderId,
       })

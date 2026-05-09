@@ -56,6 +56,7 @@ type StoredReceiptDraft = {
   invoiceNumber?: string;
   notes?: string;
   receivedAt?: string;
+  emergencyReason?: string;
   lines?: ReceiptLine[];
 };
 
@@ -161,10 +162,12 @@ export function ReceiptForm({
   const [invoiceNumber, setInvoiceNumber] = useState(storedDraft?.invoiceNumber ?? prefillInvoiceNumber);
   const [notes, setNotes] = useState(storedDraft?.notes ?? prefillNotes);
   const [receivedAt, setReceivedAt] = useState(storedDraft?.receivedAt ?? "");
+  const [emergencyReason, setEmergencyReason] = useState(storedDraft?.emergencyReason ?? "");
   const [lines, setLines] = useState<ReceiptLine[]>(
     storedDraft?.lines ?? buildInitialRows({ prefillRows, defaultLocationId })
   );
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const entryMode = selectedPurchaseOrderId ? "normal" : "emergency";
 
   const poOptions = useMemo(
     () =>
@@ -193,10 +196,11 @@ export function ReceiptForm({
       invoiceNumber,
       notes,
       receivedAt,
+      emergencyReason,
       lines,
     };
     window.sessionStorage.setItem(storageKey, JSON.stringify(payload));
-  }, [invoiceNumber, lines, notes, receivedAt, storageKey, supplierId]);
+  }, [emergencyReason, invoiceNumber, lines, notes, receivedAt, storageKey, supplierId]);
 
   const addLine = () => {
     setLines((prev) => [
@@ -233,6 +237,9 @@ export function ReceiptForm({
   const handleClientValidation = (event: React.FormEvent<HTMLFormElement>) => {
     const nextErrors: Record<string, string> = {};
     if (!supplierId) nextErrors["supplier_id"] = "Selecciona un proveedor.";
+    if (entryMode === "emergency" && !emergencyReason.trim()) {
+      nextErrors["emergency_reason"] = "Escribe el motivo de la recepción de emergencia.";
+    }
 
     const hasAtLeastOneValidLine = lines.some((line) => {
       const qty = Number(line.quantity || 0);
@@ -272,16 +279,18 @@ export function ReceiptForm({
     <form action={action} className="ui-panel space-y-4" onSubmit={handleClientValidation}>
       <input type="hidden" name="site_id" value={siteId} />
       <input type="hidden" name="purchase_order_id" value={selectedPurchaseOrderId} />
+      <input type="hidden" name="entry_mode" value={entryMode} />
+      <input type="hidden" name="emergency_reason" value={emergencyReason} />
 
       <div className="grid gap-3 md:grid-cols-4">
         <label className="flex flex-col gap-1 md:col-span-2">
-          <span className="ui-label">Orden de compra (opcional)</span>
+          <span className="ui-label">Orden de compra</span>
           <select
             className="ui-input"
             value={selectedPurchaseOrderId}
             onChange={(e) => onPurchaseOrderChange(e.target.value)}
           >
-            <option value="">Sin orden de compra</option>
+            <option value="">Emergencia / sin orden de compra</option>
             {poOptions.map((po) => (
               <option key={po.value} value={po.value}>
                 {po.label}
@@ -323,13 +332,29 @@ export function ReceiptForm({
         </label>
       </div>
 
+      {entryMode === "emergency" ? (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+          <div className="font-semibold">Recepción de emergencia</div>
+          <p className="mt-1">
+            Esta recepción no está vinculada a una orden de compra activa. Registra el motivo para dejar trazabilidad.
+          </p>
+        </div>
+      ) : (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950">
+          <div className="font-semibold">Recepción normal</div>
+          <p className="mt-1">
+            Esta recepción quedará vinculada a la orden de compra seleccionada.
+          </p>
+        </div>
+      )}
+
       <div className="grid gap-3 md:grid-cols-2">
         <label className="flex flex-col gap-1">
           <span className="ui-label">Factura / referencia</span>
           <input
             name="invoice_number"
             className="ui-input"
-            placeholder="FAC-0001"
+            placeholder={entryMode === "emergency" ? "Referencia obligatoria si aplica" : "FAC-0001"}
             value={invoiceNumber}
             onChange={(e) => setInvoiceNumber(e.target.value)}
           />
@@ -345,6 +370,22 @@ export function ReceiptForm({
           />
         </label>
       </div>
+
+      {entryMode === "emergency" ? (
+        <label className="flex flex-col gap-1">
+          <span className="ui-label">Motivo de emergencia</span>
+          <input
+            className="ui-input"
+            placeholder="Ej: compra urgente sin OC por falta de stock"
+            value={emergencyReason}
+            onChange={(e) => setEmergencyReason(e.target.value)}
+            required
+          />
+          {fieldErrors["emergency_reason"] ? (
+            <span className="text-xs text-rose-600">{fieldErrors["emergency_reason"]}</span>
+          ) : null}
+        </label>
+      ) : null}
 
       <div className="flex items-center justify-between">
         <div className="ui-h3">Items de recepcion</div>
