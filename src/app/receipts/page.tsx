@@ -103,6 +103,9 @@ type EntryRow = {
   supplier_name: string | null;
   invoice_number: string | null;
   status: string | null;
+  entry_mode: string | null;
+  emergency_reason: string | null;
+  purchase_order_id: string | null;
   received_at: string | null;
   created_at: string | null;
 };
@@ -205,8 +208,45 @@ async function createReceipt(formData: FormData) {
     redirect("/receipts?error=" + encodeURIComponent("Proveedor no valido."));
   }
 
+  if (purchaseOrderId) {
+    const { data: purchaseOrderRow, error: purchaseOrderErr } = await supabase
+      .from("purchase_orders")
+      .select("id,site_id,supplier_id,status")
+      .eq("id", purchaseOrderId)
+      .maybeSingle();
+
+    if (purchaseOrderErr) {
+      redirect("/receipts?error=" + encodeURIComponent(purchaseOrderErr.message));
+    }
+
+    const purchaseOrderSiteId = String(purchaseOrderRow?.site_id ?? "").trim();
+    const purchaseOrderSupplierId = String(purchaseOrderRow?.supplier_id ?? "").trim();
+    const purchaseOrderStatus = String(purchaseOrderRow?.status ?? "").trim();
+
+    if (!purchaseOrderRow || purchaseOrderSiteId !== siteId) {
+      redirect("/receipts?error=" + encodeURIComponent("Orden de compra no valida para esta sede."));
+    }
+
+    if (!["draft", "sent"].includes(purchaseOrderStatus)) {
+      redirect(
+        "/receipts?error=" +
+        encodeURIComponent("La orden de compra seleccionada ya no esta activa para recepcion.")
+      );
+    }
+
+    if (purchaseOrderSupplierId && purchaseOrderSupplierId !== supplierId) {
+      redirect(
+        "/receipts?error=" +
+        encodeURIComponent("El proveedor no coincide con la orden de compra seleccionada.")
+      );
+    }
+  }
+
   const productIds = formData.getAll("item_product_id").map((value) => String(value).trim());
   const locationIds = formData.getAll("item_location_id").map((value) => String(value).trim());
+  const locationPositionIds = formData
+    .getAll("item_location_position_id")
+    .map((value) => String(value).trim());
   const quantities = formData
     .getAll("item_quantity_received")
     .map((value) => asNumber(String(value).trim()));
@@ -264,6 +304,7 @@ async function createReceipt(formData: FormData) {
       return {
         product_id: productId,
         location_id: locationIds[index] || "",
+        location_position_id: locationPositionIds[index] || null,
         quantity_received: quantityReceived,
         quantity_declared: quantityReceived,
         stock_unit_code: stockUnitCode || "un",
@@ -286,6 +327,45 @@ async function createReceipt(formData: FormData) {
 
   if (items.some((item) => !item.location_id)) {
     redirect("/receipts?error=" + encodeURIComponent("Selecciona una LOC para cada item."));
+  }
+
+  const selectedLocationPositionIds = Array.from(
+    new Set(
+      items
+        .map((item) => item.location_position_id)
+        .filter((id): id is string => Boolean(id))
+    )
+  );
+
+  if (selectedLocationPositionIds.length > 0) {
+    const { data: positionRowsData, error: positionRowsErr } = await supabase
+      .from("inventory_location_positions")
+      .select("id,location_id")
+      .in("id", selectedLocationPositionIds)
+      .eq("is_active", true);
+
+    if (positionRowsErr) {
+      redirect("/receipts?error=" + encodeURIComponent(positionRowsErr.message));
+    }
+
+    const positionLocationMap = new Map(
+      ((positionRowsData ?? []) as Array<{ id: string; location_id: string }>).map((row) => [
+        row.id,
+        row.location_id,
+      ])
+    );
+
+    const hasInvalidLocationPosition = items.some((item) => {
+      if (!item.location_position_id) return false;
+      return positionLocationMap.get(item.location_position_id) !== item.location_id;
+    });
+
+    if (hasInvalidLocationPosition) {
+      redirect(
+        "/receipts?error=" +
+        encodeURIComponent("Hay una ubicacion interna que no pertenece al LOC seleccionado.")
+      );
+    }
   }
 
   const status = "received";
@@ -338,6 +418,7 @@ async function createReceipt(formData: FormData) {
     entry_id: entry.id,
     product_id: item.product_id,
     location_id: item.location_id,
+    location_position_id: item.location_position_id,
     quantity_declared: item.quantity_declared,
     quantity_received: item.quantity_received,
     unit: item.stock_unit_code,
@@ -363,6 +444,7 @@ async function createReceipt(formData: FormData) {
   const movementRows = items.map((item) => ({
     site_id: siteId,
     product_id: item.product_id,
+    location_position_id: item.location_position_id,
     movement_type: "receipt_in",
     quantity: item.quantity_received,
     input_qty: item.quantity_received,
@@ -663,6 +745,7 @@ export default async function ReceiptsPage({
   });
 
   const purchaseOrderId = String(sp.purchase_order_id ?? "").trim();
+  let selectedPurchaseOrderIdForForm = "";
   let prefillSupplierId = "";
   let prefillInvoiceNumber = "";
   let prefillNotes = "";
@@ -676,11 +759,15 @@ export default async function ReceiptsPage({
   if (purchaseOrderId) {
     const { data: poRow } = await supabase
       .from("purchase_orders")
-      .select("id,supplier_id,site_id,notes")
+      .select("id,supplier_id,site_id,status,created_at,notes")
       .eq("id", purchaseOrderId)
       .maybeSingle();
     const purchaseOrder = poRow as PurchaseOrderRow | null;
-    if (purchaseOrder?.site_id === siteId) {
+    if (
+      purchaseOrder?.site_id === siteId &&
+      ["draft", "sent"].includes(String(purchaseOrder.status ?? ""))
+    ) {
+      selectedPurchaseOrderIdForForm = purchaseOrderId;
       prefillSupplierId = String(purchaseOrder.supplier_id ?? "");
       prefillInvoiceNumber = formatPurchaseOrderRef({
         id: String(purchaseOrder.id ?? ""),
@@ -715,14 +802,14 @@ export default async function ReceiptsPage({
     .from("purchase_orders")
     .select("id,status,created_at,suppliers(name)")
     .eq("site_id", siteId)
-    .in("status", ["draft", "sent", "received"])
+    .in("status", ["draft", "sent"])
     .order("created_at", { ascending: false })
     .limit(200);
   const purchaseOrders = (purchaseOrdersData ?? []) as PurchaseOrderRow[];
 
   let entriesQuery = await supabase
     .from("inventory_entries")
-    .select("id,supplier_name,invoice_number,status,received_at,created_at")
+    .select("id,supplier_name,invoice_number,status,entry_mode,emergency_reason,purchase_order_id,received_at,created_at")
     .eq("site_id", siteId)
     .eq("source_app", "origo")
     .order("created_at", { ascending: false })
@@ -730,7 +817,7 @@ export default async function ReceiptsPage({
   if (entriesQuery.error && entriesQuery.error.code === "42703") {
     entriesQuery = await supabase
       .from("inventory_entries")
-      .select("id,supplier_name,invoice_number,status,received_at,created_at")
+      .select("id,supplier_name,invoice_number,status,entry_mode,emergency_reason,purchase_order_id,received_at,created_at")
       .eq("site_id", siteId)
       .order("created_at", { ascending: false })
       .limit(20);
@@ -767,7 +854,7 @@ export default async function ReceiptsPage({
           status: po.status,
           suppliers: Array.isArray(po.suppliers) ? po.suppliers[0] ?? null : po.suppliers ?? null,
         }))}
-        selectedPurchaseOrderId={purchaseOrderId}
+        selectedPurchaseOrderId={selectedPurchaseOrderIdForForm}
         prefillSupplierId={prefillSupplierId}
         prefillInvoiceNumber={prefillInvoiceNumber}
         prefillNotes={prefillNotes}
@@ -785,6 +872,7 @@ export default async function ReceiptsPage({
                 <th className="py-2 pr-3">Fecha</th>
                 <th className="py-2 pr-3">Proveedor</th>
                 <th className="py-2 pr-3">Factura</th>
+                <th className="py-2 pr-3">Tipo</th>
                 <th className="py-2 pr-3">Estado</th>
               </tr>
             </thead>
@@ -794,12 +882,28 @@ export default async function ReceiptsPage({
                   <td className="py-2 pr-3 font-mono">{entryRow.received_at ?? entryRow.created_at ?? "-"}</td>
                   <td className="py-2 pr-3">{entryRow.supplier_name ?? "-"}</td>
                   <td className="py-2 pr-3">{entryRow.invoice_number ?? "-"}</td>
+                  <td className="py-2 pr-3">
+                    {entryRow.entry_mode === "emergency" ? (
+                      <span className="rounded-full bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-800">
+                        Emergencia
+                      </span>
+                    ) : (
+                      <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-800">
+                        Normal
+                      </span>
+                    )}
+                    {entryRow.entry_mode === "emergency" && entryRow.emergency_reason ? (
+                      <div className="mt-1 max-w-[220px] text-xs text-[var(--ui-muted)]">
+                        {entryRow.emergency_reason}
+                      </div>
+                    ) : null}
+                  </td>
                   <td className="py-2 pr-3">{entryRow.status ?? "-"}</td>
                 </tr>
               ))}
               {!entryRows.length ? (
                 <tr>
-                  <td className="py-4 text-[var(--ui-muted)]" colSpan={4}>
+                  <td className="py-4 text-[var(--ui-muted)]" colSpan={5}>
                     No hay recepciones registradas.
                   </td>
                 </tr>

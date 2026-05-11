@@ -52,6 +52,7 @@ type PrefillRow = {
 
 type ReceiptLine = {
   productId: string;
+  productSearch: string;
   locationId: string;
   positionId: string;
   quantity: string;
@@ -96,6 +97,7 @@ function buildInitialRows(params: {
     return [
       {
         productId: "",
+        productSearch: "",
         locationId: params.defaultLocationId,
         positionId: "",
         quantity: "",
@@ -110,6 +112,7 @@ function buildInitialRows(params: {
 
   return params.prefillRows.map((row) => ({
     productId: row.productId,
+    productSearch: "",
     locationId: params.defaultLocationId,
     positionId: "",
     quantity: String(row.quantity),
@@ -125,6 +128,7 @@ function normalizeStoredLines(lines: ReceiptLine[] | undefined, defaultLocationI
   if (!Array.isArray(lines) || !lines.length) return null;
   return lines.map((line) => ({
     productId: line.productId ?? "",
+    productSearch: line.productSearch ?? "",
     locationId: line.locationId ?? defaultLocationId,
     positionId: line.positionId ?? "",
     quantity: line.quantity ?? "",
@@ -182,6 +186,21 @@ function formatLocationPositionLabel(position: LocationPositionRow) {
   return `${name} · ${kind}`;
 }
 
+function formatProductOptionLabel(product: ProductRow) {
+  const name = String(product.name ?? product.id).trim();
+  const unit = String(product.stock_unit_code ?? product.unit ?? "").trim();
+
+  return unit ? `${name} · ${unit}` : name;
+}
+
+function normalizeProductSearch(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
 export function ReceiptForm({
   action,
   siteId,
@@ -202,7 +221,9 @@ export function ReceiptForm({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const defaultLocationId = locations[0]?.id ?? "";
-  const storageKey = `origo:receipts:form:${siteId}`;
+  const receiptDraftScope = selectedPurchaseOrderId ? `po:${selectedPurchaseOrderId}` : "emergency";
+  const storageKey = `origo:receipts:form:${siteId}:${receiptDraftScope}`;
+  const legacyStorageKey = `origo:receipts:form:${siteId}`;
   const storedDraft = readStoredDraft(storageKey, defaultLocationId);
 
   const [supplierId, setSupplierId] = useState(storedDraft?.supplierId ?? prefillSupplierId);
@@ -232,6 +253,57 @@ export function ReceiptForm({
     return map;
   }, [products]);
 
+  const productOptions = useMemo(
+    () =>
+      products.map((product) => {
+        const label = formatProductOptionLabel(product);
+
+        return {
+          id: product.id,
+          label,
+          searchKey: normalizeProductSearch(label),
+        };
+      }),
+    [products]
+  );
+
+  const productIdByLabel = useMemo(() => {
+    const map = new Map<string, string>();
+
+    for (const option of productOptions) {
+      map.set(option.label, option.id);
+    }
+
+    return map;
+  }, [productOptions]);
+
+  const productLabelById = useMemo(() => {
+    const map = new Map<string, string>();
+
+    for (const option of productOptions) {
+      map.set(option.id, option.label);
+    }
+
+    return map;
+  }, [productOptions]);
+
+  const getProductSuggestions = (search: string) => {
+    const normalizedSearch = normalizeProductSearch(search);
+
+    if (!normalizedSearch) return productOptions.slice(0, 60);
+
+    return productOptions
+      .filter((product) => product.searchKey.includes(normalizedSearch))
+      .slice(0, 60);
+  };
+
+  const getLineProductInputValue = (line: ReceiptLine) => {
+    if (line.productSearch) return line.productSearch;
+    if (!line.productId) return "";
+
+    return productLabelById.get(line.productId) ?? line.productId;
+  };
+
   const positionsByLocationId = useMemo(() => {
     const map = new Map<string, LocationPositionRow[]>();
 
@@ -259,10 +331,15 @@ export function ReceiptForm({
   }, [locationPositions]);
 
   useEffect(() => {
+    window.sessionStorage.removeItem(legacyStorageKey);
+  }, [legacyStorageKey]);
+
+  useEffect(() => {
     if (submitSuccess) {
       window.sessionStorage.removeItem(storageKey);
+      window.sessionStorage.removeItem(legacyStorageKey);
     }
-  }, [storageKey, submitSuccess]);
+  }, [legacyStorageKey, storageKey, submitSuccess]);
 
   useEffect(() => {
     const payload = {
@@ -281,6 +358,7 @@ export function ReceiptForm({
       ...prev,
       {
         productId: "",
+        productSearch: "",
         locationId: defaultLocationId,
         positionId: "",
         quantity: "",
@@ -416,21 +494,21 @@ export function ReceiptForm({
         </label>
       </div>
 
-      {entryMode === "emergency" ? (
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-          <div className="font-semibold">Recepción de emergencia</div>
-          <p className="mt-1">
-            Esta recepción no está vinculada a una orden de compra activa. Registra el motivo para dejar trazabilidad.
-          </p>
-        </div>
-      ) : (
+      {entryMode === "normal" ? (
         <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950">
           <div className="font-semibold">Recepción normal</div>
           <p className="mt-1">
             Esta recepción quedará vinculada a la orden de compra seleccionada.
           </p>
         </div>
-      )}
+      ) : hasPurchaseOrderOptions ? (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+          <div className="font-semibold">Recepción de emergencia</div>
+          <p className="mt-1">
+            Esta recepción no está vinculada a una orden de compra. Registra el motivo para dejar trazabilidad.
+          </p>
+        </div>
+      ) : null}
 
       <div className="grid gap-3 md:grid-cols-2">
         <label className="flex flex-col gap-1">
@@ -484,38 +562,104 @@ export function ReceiptForm({
         ) : null}
         {lines.map((line, index) => (
           <div key={`line-${index}`} className="ui-panel-soft grid gap-3 md:grid-cols-8">
-            <label className="md:col-span-2">
-              <span className="ui-label">Producto</span>
-              <select
-                name="item_product_id"
-                className="ui-input mt-1"
-                value={line.productId}
-                onChange={(e) => updateLine(index, { productId: e.target.value })}
+            <div className="md:col-span-8 flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-[var(--ui-text)]">
+                  Item {index + 1}
+                </div>
+                <div className="text-xs text-[var(--ui-muted)]">
+                  Selecciona producto, destino operativo y cantidad recibida.
+                </div>
+              </div>
+
+              <button
+                type="button"
+                className="ui-btn ui-btn--ghost ui-btn--sm shrink-0"
+                onClick={() => removeLine(index)}
+                disabled={lines.length <= 1}
               >
-                <option value="">Seleccionar</option>
-                {products.map((product) => (
-                  <option key={product.id} value={product.id}>
-                    {product.name ?? product.id}
-                  </option>
+                Quitar
+              </button>
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="block">
+                <span className="ui-label">Producto</span>
+                <input
+                  className="ui-input mt-1"
+                  list={`receipt-products-${index}`}
+                  placeholder="Buscar producto por nombre o unidad"
+                  value={getLineProductInputValue(line)}
+                  autoComplete="off"
+                  onChange={(e) => {
+                    const nextSearch = e.target.value;
+                    const matchedProductId = productIdByLabel.get(nextSearch) ?? "";
+
+                    updateLine(index, {
+                      productSearch: nextSearch,
+                      productId: matchedProductId,
+                    });
+                  }}
+                />
+              </label>
+
+              <datalist id={`receipt-products-${index}`}>
+                {getProductSuggestions(getLineProductInputValue(line)).map((product) => (
+                  <option key={product.id} value={product.label} />
                 ))}
-              </select>
+              </datalist>
+
+              <input type="hidden" name="item_product_id" value={line.productId} />
               <input
                 type="hidden"
                 name="item_purchase_order_item_id"
                 value={line.purchaseOrderItemId}
               />
+
               {line.productId ? (
-                <p className="mt-1 text-xs text-[var(--ui-muted)]">
-                  {productMap.get(line.productId)?.lot_tracking ? "Requiere lote" : "Sin lote"} ·{" "}
-                  {productMap.get(line.productId)?.expiry_tracking
-                    ? "Requiere vencimiento"
-                    : "Sin vencimiento"}
+                <div className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-950">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="font-semibold">Producto seleccionado</div>
+                      <div className="mt-0.5">
+                        {productLabelById.get(line.productId) ?? line.productId}
+                      </div>
+                      <div className="mt-1 text-emerald-800">
+                        {productMap.get(line.productId)?.lot_tracking ? "Requiere lote" : "Sin lote"} ·{" "}
+                        {productMap.get(line.productId)?.expiry_tracking
+                          ? "Requiere vencimiento"
+                          : "Sin vencimiento"}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="rounded-full border border-emerald-300 bg-white px-2 py-1 text-[11px] font-semibold text-emerald-900"
+                      onClick={() =>
+                        updateLine(index, {
+                          productId: "",
+                          productSearch: "",
+                          purchaseOrderItemId: "",
+                        })
+                      }
+                    >
+                      Cambiar
+                    </button>
+                  </div>
+                </div>
+              ) : line.productSearch ? (
+                <p className="mt-1 text-xs text-amber-700">
+                  Selecciona una opción exacta de la lista para validar el producto.
                 </p>
-              ) : null}
+              ) : (
+                <p className="mt-1 text-xs text-[var(--ui-muted)]">
+                  Escribe y selecciona un producto de la lista.
+                </p>
+              )}
+
               {fieldErrors[`line_${index}_productId`] ? (
                 <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_productId`]}</p>
               ) : null}
-            </label>
+            </div>
 
             <label>
               <span className="ui-label">Destino operativo</span>
@@ -630,17 +774,6 @@ export function ReceiptForm({
                 onChange={(e) => updateLine(index, { notes: e.target.value })}
               />
             </label>
-
-            <div className="md:col-span-6 flex justify-end">
-              <button
-                type="button"
-                className="ui-btn ui-btn--ghost ui-btn--sm"
-                onClick={() => removeLine(index)}
-                disabled={lines.length <= 1}
-              >
-                Quitar item
-              </button>
-            </div>
           </div>
         ))}
       </div>
