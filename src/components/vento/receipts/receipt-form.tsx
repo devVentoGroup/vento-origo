@@ -48,6 +48,11 @@ type PrefillRow = {
   quantity: number;
   unitCost: number;
   purchaseOrderItemId: string;
+  presentationId: string;
+  inputUnitCode: string;
+  inputUnitLabel: string;
+  conversionFactorToStock: number;
+  stockUnitCode: string;
 };
 
 type ReceiptLine = {
@@ -61,6 +66,11 @@ type ReceiptLine = {
   expiryDate: string;
   notes: string;
   purchaseOrderItemId: string;
+  presentationId: string;
+  inputUnitCode: string;
+  inputUnitLabel: string;
+  conversionFactorToStock: string;
+  stockUnitCode: string;
 };
 
 type StoredReceiptDraft = {
@@ -106,6 +116,11 @@ function buildInitialRows(params: {
         expiryDate: "",
         notes: "",
         purchaseOrderItemId: "",
+        presentationId: "",
+        inputUnitCode: "",
+        inputUnitLabel: "",
+        conversionFactorToStock: "1",
+        stockUnitCode: "",
       },
     ];
   }
@@ -121,6 +136,11 @@ function buildInitialRows(params: {
     expiryDate: "",
     notes: "",
     purchaseOrderItemId: row.purchaseOrderItemId,
+    presentationId: row.presentationId,
+    inputUnitCode: row.inputUnitCode,
+    inputUnitLabel: row.inputUnitLabel,
+    conversionFactorToStock: String(row.conversionFactorToStock || 1),
+    stockUnitCode: row.stockUnitCode,
   }));
 }
 
@@ -137,6 +157,11 @@ function normalizeStoredLines(lines: ReceiptLine[] | undefined, defaultLocationI
     expiryDate: line.expiryDate ?? "",
     notes: line.notes ?? "",
     purchaseOrderItemId: line.purchaseOrderItemId ?? "",
+    presentationId: line.presentationId ?? "",
+    inputUnitCode: line.inputUnitCode ?? "",
+    inputUnitLabel: line.inputUnitLabel ?? "",
+    conversionFactorToStock: line.conversionFactorToStock ?? "1",
+    stockUnitCode: line.stockUnitCode ?? "",
   }));
 }
 
@@ -201,6 +226,25 @@ function normalizeProductSearch(value: string) {
     .trim();
 }
 
+function formatQty(value: number): string {
+  return new Intl.NumberFormat("es-CO", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 6,
+  }).format(Number.isFinite(value) ? value : 0);
+}
+
+function formatAmount(value: number): string {
+  return new Intl.NumberFormat("es-CO", {
+    style: "currency",
+    currency: "COP",
+    maximumFractionDigits: 2,
+  }).format(Number.isFinite(value) ? value : 0);
+}
+
+function getProductStockUnitCode(product: ProductRow | undefined): string {
+  return String(product?.stock_unit_code ?? product?.unit ?? "un").trim().toLowerCase() || "un";
+}
+
 export function ReceiptForm({
   action,
   siteId,
@@ -231,11 +275,23 @@ export function ReceiptForm({
   const [notes, setNotes] = useState(storedDraft?.notes ?? prefillNotes);
   const [receivedAt, setReceivedAt] = useState(storedDraft?.receivedAt ?? "");
   const [emergencyReason, setEmergencyReason] = useState(storedDraft?.emergencyReason ?? "");
-  const [lines, setLines] = useState<ReceiptLine[]>(
-    storedDraft?.lines ?? buildInitialRows({ prefillRows, defaultLocationId })
-  );
+  const [lines, setLines] = useState<ReceiptLine[]>(() => {
+    const initialRows = buildInitialRows({ prefillRows, defaultLocationId });
+    const storedLinesAreUsable =
+      Boolean(storedDraft?.lines?.length) &&
+      (!selectedPurchaseOrderId ||
+        storedDraft?.lines?.every(
+          (line) =>
+            Boolean(line.purchaseOrderItemId) &&
+            Boolean(line.inputUnitLabel) &&
+            Number(line.conversionFactorToStock || 0) > 0
+        ));
+
+    return storedLinesAreUsable ? storedDraft?.lines ?? initialRows : initialRows;
+  });
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const entryMode = selectedPurchaseOrderId ? "normal" : "emergency";
+  const isPurchaseOrderReceipt = entryMode === "normal";
 
   const poOptions = useMemo(
     () =>
@@ -367,6 +423,11 @@ export function ReceiptForm({
         expiryDate: "",
         notes: "",
         purchaseOrderItemId: "",
+        presentationId: "",
+        inputUnitCode: "",
+        inputUnitLabel: "",
+        conversionFactorToStock: "1",
+        stockUnitCode: "",
       },
     ]);
   };
@@ -396,7 +457,12 @@ export function ReceiptForm({
 
     const hasAtLeastOneValidLine = lines.some((line) => {
       const qty = Number(line.quantity || 0);
-      return Boolean(line.productId) && Number.isFinite(qty) && qty > 0;
+      const factor = Number(line.conversionFactorToStock || 0);
+      const hasPresentationSnapshot =
+        entryMode === "emergency" ||
+        (Boolean(line.purchaseOrderItemId) && Boolean(line.inputUnitLabel) && factor > 0);
+
+      return Boolean(line.productId) && hasPresentationSnapshot && Number.isFinite(qty) && qty > 0;
     });
     if (!hasAtLeastOneValidLine) {
       nextErrors["lines"] = "Agrega al menos un item con producto y cantidad mayor a 0.";
@@ -412,6 +478,17 @@ export function ReceiptForm({
       if (!hasProduct) nextErrors[`line_${index}_productId`] = "Selecciona producto.";
       if (!hasQty) nextErrors[`line_${index}_quantity`] = "Ingresa cantidad valida.";
       if (!line.locationId) nextErrors[`line_${index}_locationId`] = "Selecciona LOC.";
+
+      if (entryMode === "normal" && !line.purchaseOrderItemId) {
+        nextErrors[`line_${index}_presentation`] = "La línea no pertenece a la orden de compra seleccionada.";
+      }
+
+      if (
+        entryMode === "normal" &&
+        (!line.inputUnitLabel.trim() || Number(line.conversionFactorToStock || 0) <= 0)
+      ) {
+        nextErrors[`line_${index}_presentation`] = "La línea no tiene presentación válida desde la OC.";
+      }
 
       const product = line.productId ? productMap.get(line.productId) : null;
       if (product?.lot_tracking && !line.lotNumber.trim()) {
@@ -551,231 +628,298 @@ export function ReceiptForm({
 
       <div className="flex items-center justify-between">
         <div className="ui-h3">Items de recepcion</div>
-        <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={addLine}>
-          + Agregar item
-        </button>
+        {!isPurchaseOrderReceipt ? (
+          <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={addLine}>
+            + Agregar item
+          </button>
+        ) : null}
       </div>
 
       <div className="space-y-3">
         {fieldErrors["lines"] ? (
           <p className="text-sm text-rose-600">{fieldErrors["lines"]}</p>
         ) : null}
-        {lines.map((line, index) => (
-          <div key={`line-${index}`} className="ui-panel-soft grid gap-3 md:grid-cols-8">
-            <div className="md:col-span-8 flex items-start justify-between gap-3">
-              <div>
-                <div className="text-sm font-semibold text-[var(--ui-text)]">
-                  Item {index + 1}
-                </div>
-                <div className="text-xs text-[var(--ui-muted)]">
-                  Selecciona producto, destino operativo y cantidad recibida.
-                </div>
-              </div>
+        {lines.map((line, index) => {
+          const product = line.productId ? productMap.get(line.productId) : undefined;
+          const stockUnitCode = line.stockUnitCode || getProductStockUnitCode(product);
+          const inputUnitLabel = line.inputUnitLabel || line.inputUnitCode || stockUnitCode;
+          const inputQty = Number(line.quantity || 0);
+          const conversionFactorToStock = Number(line.conversionFactorToStock || 0);
+          const stockQty =
+            inputQty > 0 && conversionFactorToStock > 0
+              ? inputQty * conversionFactorToStock
+              : 0;
+          const inputUnitCost = Number(line.unitCost || 0);
+          const stockUnitCost =
+            inputUnitCost > 0 && conversionFactorToStock > 0
+              ? inputUnitCost / conversionFactorToStock
+              : 0;
 
-              <button
-                type="button"
-                className="ui-btn ui-btn--ghost ui-btn--sm shrink-0"
-                onClick={() => removeLine(index)}
-                disabled={lines.length <= 1}
-              >
-                Quitar
-              </button>
-            </div>
-
-            <div className="md:col-span-2">
-              <label className="block">
-                <span className="ui-label">Producto</span>
-                <input
-                  className="ui-input mt-1"
-                  list={`receipt-products-${index}`}
-                  placeholder="Buscar producto por nombre o unidad"
-                  value={getLineProductInputValue(line)}
-                  autoComplete="off"
-                  onChange={(e) => {
-                    const nextSearch = e.target.value;
-                    const matchedProductId = productIdByLabel.get(nextSearch) ?? "";
-
-                    updateLine(index, {
-                      productSearch: nextSearch,
-                      productId: matchedProductId,
-                    });
-                  }}
-                />
-              </label>
-
-              <datalist id={`receipt-products-${index}`}>
-                {getProductSuggestions(getLineProductInputValue(line)).map((product) => (
-                  <option key={product.id} value={product.label} />
-                ))}
-              </datalist>
-
-              <input type="hidden" name="item_product_id" value={line.productId} />
-              <input
-                type="hidden"
-                name="item_purchase_order_item_id"
-                value={line.purchaseOrderItemId}
-              />
-
-              {line.productId ? (
-                <div className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-950">
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <div className="font-semibold">Producto seleccionado</div>
-                      <div className="mt-0.5">
-                        {productLabelById.get(line.productId) ?? line.productId}
-                      </div>
-                      <div className="mt-1 text-emerald-800">
-                        {productMap.get(line.productId)?.lot_tracking ? "Requiere lote" : "Sin lote"} ·{" "}
-                        {productMap.get(line.productId)?.expiry_tracking
-                          ? "Requiere vencimiento"
-                          : "Sin vencimiento"}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      className="rounded-full border border-emerald-300 bg-white px-2 py-1 text-[11px] font-semibold text-emerald-900"
-                      onClick={() =>
-                        updateLine(index, {
-                          productId: "",
-                          productSearch: "",
-                          purchaseOrderItemId: "",
-                        })
-                      }
-                    >
-                      Cambiar
-                    </button>
+          return (
+            <div key={`line-${index}`} className="ui-panel-soft grid gap-3 md:grid-cols-8">
+              <div className="md:col-span-8 flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-[var(--ui-text)]">
+                    Item {index + 1}
+                  </div>
+                  <div className="text-xs text-[var(--ui-muted)]">
+                    Selecciona producto, destino operativo y cantidad recibida.
                   </div>
                 </div>
-              ) : line.productSearch ? (
-                <p className="mt-1 text-xs text-amber-700">
-                  Selecciona una opción exacta de la lista para validar el producto.
-                </p>
-              ) : (
-                <p className="mt-1 text-xs text-[var(--ui-muted)]">
-                  Escribe y selecciona un producto de la lista.
-                </p>
-              )}
 
-              {fieldErrors[`line_${index}_productId`] ? (
-                <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_productId`]}</p>
-              ) : null}
-            </div>
-
-            <label>
-              <span className="ui-label">Destino operativo</span>
-              <select
-                name="item_location_id"
-                className="ui-input mt-1"
-                value={line.locationId}
-                onChange={(e) => updateLine(index, { locationId: e.target.value, positionId: "" })}
-              >
-                <option value="">Seleccionar</option>
-                {locations.map((location) => (
-                  <option key={location.id} value={location.id}>
-                    {formatReceiptLocationLabel(location)}
-                  </option>
-                ))}
-              </select>
-              {fieldErrors[`line_${index}_locationId`] ? (
-                <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_locationId`]}</p>
-              ) : null}
-            </label>
-
-            {positionsByLocationId.get(line.locationId)?.length ? (
-              <label>
-                <span className="ui-label">Ubicación interna</span>
-                <select
-                  name="item_location_position_id"
-                  className="ui-input mt-1"
-                  value={line.positionId}
-                  onChange={(e) => updateLine(index, { positionId: e.target.value })}
+                <button
+                  type="button"
+                  className="ui-btn ui-btn--ghost ui-btn--sm shrink-0"
+                  onClick={() => removeLine(index)}
+                  disabled={lines.length <= 1}
                 >
-                  <option value="">Sin posición interna</option>
-                  {positionsByLocationId.get(line.locationId)?.map((position) => (
-                    <option key={position.id} value={position.id}>
-                      {formatLocationPositionLabel(position)}
+                  Quitar
+                </button>
+              </div>
+
+              <div className="md:col-span-2">
+                <label className="block">
+                  <span className="ui-label">Producto</span>
+                  <input
+                    className="ui-input mt-1 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
+                    list={`receipt-products-${index}`}
+                    placeholder="Buscar producto por nombre o unidad"
+                    value={getLineProductInputValue(line)}
+                    autoComplete="off"
+                    disabled={isPurchaseOrderReceipt}
+                    onChange={(e) => {
+                      const nextSearch = e.target.value;
+                      const matchedProductId = productIdByLabel.get(nextSearch) ?? "";
+
+                      const matchedProduct = matchedProductId ? productMap.get(matchedProductId) : undefined;
+                      const matchedStockUnitCode = getProductStockUnitCode(matchedProduct);
+
+                      updateLine(index, {
+                        productSearch: nextSearch,
+                        productId: matchedProductId,
+                        presentationId: "",
+                        inputUnitCode: matchedStockUnitCode,
+                        inputUnitLabel: matchedStockUnitCode,
+                        conversionFactorToStock: "1",
+                        stockUnitCode: matchedStockUnitCode,
+                      });
+                    }}
+                  />
+                </label>
+
+                <datalist id={`receipt-products-${index}`}>
+                  {getProductSuggestions(getLineProductInputValue(line)).map((product) => (
+                    <option key={product.id} value={product.label} />
+                  ))}
+                </datalist>
+
+                <input type="hidden" name="item_product_id" value={line.productId} />
+                <input type="hidden" name="item_presentation_id" value={line.presentationId} />
+                <input type="hidden" name="item_input_unit_code" value={line.inputUnitCode || stockUnitCode} />
+                <input type="hidden" name="item_input_unit_label" value={inputUnitLabel} />
+                <input
+                  type="hidden"
+                  name="item_conversion_factor_to_stock"
+                  value={conversionFactorToStock > 0 ? String(conversionFactorToStock) : "1"}
+                />
+                <input type="hidden" name="item_stock_unit_code" value={stockUnitCode} />
+                <input
+                  type="hidden"
+                  name="item_purchase_order_item_id"
+                  value={line.purchaseOrderItemId}
+                />
+
+                {line.productId ? (
+                  <div className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-950">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="font-semibold">Producto seleccionado</div>
+                        <div className="mt-0.5">
+                          {productLabelById.get(line.productId) ?? line.productId}
+                        </div>
+                        <div className="mt-1 text-emerald-800">
+                          {productMap.get(line.productId)?.lot_tracking ? "Requiere lote" : "Sin lote"} ·{" "}
+                          {productMap.get(line.productId)?.expiry_tracking
+                            ? "Requiere vencimiento"
+                            : "Sin vencimiento"}
+                        </div>
+
+                        <div className="mt-1 text-emerald-800">
+                          Presentación: {inputUnitLabel}
+                        </div>
+
+                        {conversionFactorToStock > 0 ? (
+                          <div className="mt-1 text-emerald-800">
+                            1 {inputUnitLabel} = {formatQty(conversionFactorToStock)} {stockUnitCode}
+                          </div>
+                        ) : null}
+                      </div>
+                      {!isPurchaseOrderReceipt ? (
+                        <button
+                          type="button"
+                          className="rounded-full border border-emerald-300 bg-white px-2 py-1 text-[11px] font-semibold text-emerald-900"
+                          onClick={() =>
+                            updateLine(index, {
+                              productId: "",
+                              productSearch: "",
+                              purchaseOrderItemId: "",
+                              presentationId: "",
+                              inputUnitCode: "",
+                              inputUnitLabel: "",
+                              conversionFactorToStock: "1",
+                              stockUnitCode: "",
+                            })
+                          }
+                        >
+                          Cambiar
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : line.productSearch ? (
+                  <p className="mt-1 text-xs text-amber-700">
+                    Selecciona una opción exacta de la lista para validar el producto.
+                  </p>
+                ) : (
+                  <p className="mt-1 text-xs text-[var(--ui-muted)]">
+                    Escribe y selecciona un producto de la lista.
+                  </p>
+                )}
+
+                {fieldErrors[`line_${index}_productId`] ? (
+                  <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_productId`]}</p>
+                ) : null}
+              </div>
+
+              <label>
+                <span className="ui-label">Destino operativo</span>
+                <select
+                  name="item_location_id"
+                  className="ui-input mt-1"
+                  value={line.locationId}
+                  onChange={(e) => updateLine(index, { locationId: e.target.value, positionId: "" })}
+                >
+                  <option value="">Seleccionar</option>
+                  {locations.map((location) => (
+                    <option key={location.id} value={location.id}>
+                      {formatReceiptLocationLabel(location)}
                     </option>
                   ))}
                 </select>
+                {fieldErrors[`line_${index}_locationId`] ? (
+                  <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_locationId`]}</p>
+                ) : null}
+              </label>
+
+              {positionsByLocationId.get(line.locationId)?.length ? (
+                <label>
+                  <span className="ui-label">Ubicación interna</span>
+                  <select
+                    name="item_location_position_id"
+                    className="ui-input mt-1"
+                    value={line.positionId}
+                    onChange={(e) => updateLine(index, { positionId: e.target.value })}
+                  >
+                    <option value="">Sin posición interna</option>
+                    {positionsByLocationId.get(line.locationId)?.map((position) => (
+                      <option key={position.id} value={position.id}>
+                        {formatLocationPositionLabel(position)}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-xs text-[var(--ui-muted)]">
+                    Opcional. Úsalo para estantería, piso, nivel o bin.
+                  </p>
+                </label>
+              ) : (
+                <input type="hidden" name="item_location_position_id" value="" />
+              )}
+
+              <label>
+                <span className="ui-label">Cantidad recibida</span>
+                <input
+                  name="item_quantity_received"
+                  className="ui-input mt-1"
+                  type="number"
+                  step="0.000001"
+                  min="0"
+                  value={line.quantity}
+                  onChange={(e) => updateLine(index, { quantity: e.target.value })}
+                />
                 <p className="mt-1 text-xs text-[var(--ui-muted)]">
-                  Opcional. Úsalo para estantería, piso, nivel o bin.
+                  {inputQty > 0 && conversionFactorToStock > 0
+                    ? `${formatQty(inputQty)} ${inputUnitLabel} = ${formatQty(stockQty)} ${stockUnitCode}`
+                    : `Cantidad en ${inputUnitLabel}.`}
+                </p>
+                {fieldErrors[`line_${index}_quantity`] ? (
+                  <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_quantity`]}</p>
+                ) : null}
+                {fieldErrors[`line_${index}_presentation`] ? (
+                  <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_presentation`]}</p>
+                ) : null}
+              </label>
+
+              <label>
+                <span className="ui-label">Costo unitario</span>
+                <input
+                  name="item_unit_cost"
+                  className="ui-input mt-1"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={line.unitCost}
+                  onChange={(e) => updateLine(index, { unitCost: e.target.value })}
+                />
+                <p className="mt-1 text-xs text-[var(--ui-muted)]">
+                  {inputUnitCost > 0 && stockUnitCost > 0
+                    ? `${formatAmount(inputUnitCost)} por ${inputUnitLabel} · ${formatAmount(stockUnitCost)} por ${stockUnitCode}`
+                    : `Costo por ${inputUnitLabel}.`}
                 </p>
               </label>
-            ) : (
-              <input type="hidden" name="item_location_position_id" value="" />
-            )}
 
-            <label>
-              <span className="ui-label">Cantidad</span>
-              <input
-                name="item_quantity_received"
-                className="ui-input mt-1"
-                type="number"
-                step="0.000001"
-                min="0"
-                value={line.quantity}
-                onChange={(e) => updateLine(index, { quantity: e.target.value })}
-              />
-              {fieldErrors[`line_${index}_quantity`] ? (
-                <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_quantity`]}</p>
-              ) : null}
-            </label>
+              <label>
+                <span className="ui-label">Lote</span>
+                <input
+                  name="item_lot_number"
+                  className="ui-input mt-1"
+                  placeholder="Opcional"
+                  value={line.lotNumber}
+                  onChange={(e) => updateLine(index, { lotNumber: e.target.value })}
+                  required={Boolean(line.productId && productMap.get(line.productId)?.lot_tracking)}
+                />
+                {fieldErrors[`line_${index}_lotNumber`] ? (
+                  <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_lotNumber`]}</p>
+                ) : null}
+              </label>
 
-            <label>
-              <span className="ui-label">Costo unitario</span>
-              <input
-                name="item_unit_cost"
-                className="ui-input mt-1"
-                type="number"
-                step="0.01"
-                min="0"
-                value={line.unitCost}
-                onChange={(e) => updateLine(index, { unitCost: e.target.value })}
-              />
-            </label>
+              <label>
+                <span className="ui-label">Vencimiento</span>
+                <input
+                  name="item_expiry_date"
+                  className="ui-input mt-1"
+                  type="date"
+                  value={line.expiryDate}
+                  onChange={(e) => updateLine(index, { expiryDate: e.target.value })}
+                  required={Boolean(line.productId && productMap.get(line.productId)?.expiry_tracking)}
+                />
+                {fieldErrors[`line_${index}_expiryDate`] ? (
+                  <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_expiryDate`]}</p>
+                ) : null}
+              </label>
 
-            <label>
-              <span className="ui-label">Lote</span>
-              <input
-                name="item_lot_number"
-                className="ui-input mt-1"
-                placeholder="Opcional"
-                value={line.lotNumber}
-                onChange={(e) => updateLine(index, { lotNumber: e.target.value })}
-                required={Boolean(line.productId && productMap.get(line.productId)?.lot_tracking)}
-              />
-              {fieldErrors[`line_${index}_lotNumber`] ? (
-                <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_lotNumber`]}</p>
-              ) : null}
-            </label>
-
-            <label>
-              <span className="ui-label">Vencimiento</span>
-              <input
-                name="item_expiry_date"
-                className="ui-input mt-1"
-                type="date"
-                value={line.expiryDate}
-                onChange={(e) => updateLine(index, { expiryDate: e.target.value })}
-                required={Boolean(line.productId && productMap.get(line.productId)?.expiry_tracking)}
-              />
-              {fieldErrors[`line_${index}_expiryDate`] ? (
-                <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_expiryDate`]}</p>
-              ) : null}
-            </label>
-
-            <label>
-              <span className="ui-label">Notas item</span>
-              <input
-                name="item_notes"
-                className="ui-input mt-1"
-                placeholder="Opcional"
-                value={line.notes}
-                onChange={(e) => updateLine(index, { notes: e.target.value })}
-              />
-            </label>
-          </div>
-        ))}
+              <label>
+                <span className="ui-label">Notas item</span>
+                <input
+                  name="item_notes"
+                  className="ui-input mt-1"
+                  placeholder="Opcional"
+                  value={line.notes}
+                  onChange={(e) => updateLine(index, { notes: e.target.value })}
+                />
+              </label>
+            </div>
+          );
+        })}
       </div>
 
       <div className="flex justify-end">

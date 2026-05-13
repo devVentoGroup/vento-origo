@@ -10,6 +10,15 @@ export const dynamic = "force-dynamic";
 const APP_ID = "origo";
 const RETURN_TO = "/login";
 
+type ProductPresentationOption = {
+  id: string;
+  product_id: string;
+  label: string;
+  input_unit_code: string;
+  qty_in_stock_unit: number;
+  is_default: boolean;
+};
+
 export default async function NewPurchaseOrderPage({
   searchParams,
 }: {
@@ -38,12 +47,23 @@ export default async function NewPurchaseOrderPage({
     cost: number | null;
   }[];
   const productIds = products.map((product) => product.id);
-  const { data: supplierLinksData } = productIds.length
-    ? await supabase
+  const [{ data: supplierLinksData }, { data: productPresentationsData }] = productIds.length
+    ? await Promise.all([
+      supabase
         .from("product_suppliers")
         .select("product_id,supplier_id,is_primary")
+        .in("product_id", productIds),
+      supabase
+        .from("product_uom_profiles")
+        .select("id,product_id,label,input_unit_code,qty_in_stock_unit,is_default")
         .in("product_id", productIds)
-    : { data: [] };
+        .eq("source", "manual")
+        .eq("usage_context", "general")
+        .eq("is_active", true)
+        .order("is_default", { ascending: false })
+        .order("label", { ascending: true }),
+    ])
+    : [{ data: [] }, { data: [] }];
   const supplierIdsByProduct = new Map<string, Set<string>>();
   for (const row of (supplierLinksData ?? []) as Array<{ product_id: string; supplier_id: string; is_primary?: boolean | null }>) {
     const productId = String(row.product_id ?? "").trim();
@@ -53,26 +73,46 @@ export default async function NewPurchaseOrderPage({
     current.add(supplierId);
     supplierIdsByProduct.set(productId, current);
   }
+  const presentationsByProduct = new Map<string, ProductPresentationOption[]>();
+
+  for (const row of (productPresentationsData ?? []) as ProductPresentationOption[]) {
+    const productId = String(row.product_id ?? "").trim();
+    if (!productId) continue;
+
+    const current = presentationsByProduct.get(productId) ?? [];
+    current.push({
+      id: row.id,
+      product_id: row.product_id,
+      label: row.label,
+      input_unit_code: row.input_unit_code,
+      qty_in_stock_unit: Number(row.qty_in_stock_unit ?? 0),
+      is_default: Boolean(row.is_default),
+    });
+    presentationsByProduct.set(productId, current);
+  }
+
   const productsWithSupplierLinks = products.map((product) => ({
     ...product,
     supplier_ids: Array.from(supplierIdsByProduct.get(product.id) ?? []),
+    presentations: presentationsByProduct.get(product.id) ?? [],
   }));
 
   const sp = (await searchParams) ?? {};
   const errorMsg = sp.error;
   let prefillDefaults:
     | {
-        supplier_id?: string;
-        site_id?: string;
-        expected_at?: string;
-        notes?: string | null;
-        lines?: Array<{
-          product_id?: string;
-          quantity?: number | null;
-          unit_cost?: number | null;
-          unit?: string | null;
-        }>;
-      }
+      supplier_id?: string;
+      site_id?: string;
+      expected_at?: string;
+      notes?: string | null;
+      lines?: Array<{
+        product_id?: string;
+        quantity?: number | null;
+        unit_cost?: number | null;
+        unit?: string | null;
+        presentation_id?: string | null;
+      }>;
+    }
     | undefined;
 
   if (sp.prefill) {
@@ -88,6 +128,7 @@ export default async function NewPurchaseOrderPage({
           quantity?: number | null;
           unit_cost?: number | null;
           unit?: string | null;
+          presentation_id?: string | null;
         }>;
       };
       prefillDefaults = {

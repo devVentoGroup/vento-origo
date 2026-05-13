@@ -92,10 +92,19 @@ type PurchaseOrderRow = {
 
 type PurchaseOrderItemRow = {
   id: string;
+  purchase_order_id?: string | null;
   product_id: string;
   quantity_ordered: number | null;
   quantity_received: number | null;
   unit_cost: number | null;
+  unit: string | null;
+  input_uom_profile_id: string | null;
+  input_unit_code: string | null;
+  input_unit_label: string | null;
+  conversion_factor_to_stock: number | null;
+  stock_unit_code: string | null;
+  stock_quantity_ordered: number | null;
+  stock_unit_cost: number | null;
 };
 
 type EntryRow = {
@@ -256,6 +265,18 @@ async function createReceipt(formData: FormData) {
   const poItemIds = formData
     .getAll("item_purchase_order_item_id")
     .map((value) => String(value).trim());
+  const inputUnitCodes = formData
+    .getAll("item_input_unit_code")
+    .map((value) => String(value).trim().toLowerCase());
+  const inputUnitLabels = formData
+    .getAll("item_input_unit_label")
+    .map((value) => String(value).trim());
+  const conversionFactorsToStock = formData
+    .getAll("item_conversion_factor_to_stock")
+    .map((value) => asNumber(String(value).trim()));
+  const stockUnitCodesFromForm = formData
+    .getAll("item_stock_unit_code")
+    .map((value) => String(value).trim().toLowerCase());
   const lineNotes = formData.getAll("item_notes").map((value) => String(value).trim());
   const lotNumbers = formData.getAll("item_lot_number").map((value) => String(value).trim());
   const expiryDates = formData.getAll("item_expiry_date").map((value) => String(value).trim());
@@ -276,19 +297,84 @@ async function createReceipt(formData: FormData) {
       .in("product_id", productLookupIds)
     : { data: [] as ProfileRow[] };
   const profileMap = new Map(((profileRowsData ?? []) as ProfileRow[]).map((row) => [row.product_id, row]));
+  const selectedPoItemIds = Array.from(new Set(poItemIds.filter(Boolean)));
+  let poItemMap = new Map<string, PurchaseOrderItemRow>();
+
+  if (purchaseOrderId && selectedPoItemIds.length > 0) {
+    const { data: poItemsForReceiptData, error: poItemsForReceiptErr } = await supabase
+      .from("purchase_order_items")
+      .select("id,purchase_order_id,product_id,quantity_ordered,quantity_received,unit_cost,unit,input_uom_profile_id,input_unit_code,input_unit_label,conversion_factor_to_stock,stock_unit_code,stock_quantity_ordered,stock_unit_cost")
+      .eq("purchase_order_id", purchaseOrderId)
+      .in("id", selectedPoItemIds);
+
+    if (poItemsForReceiptErr) {
+      redirect("/receipts?error=" + encodeURIComponent(poItemsForReceiptErr.message));
+    }
+
+    poItemMap = new Map(
+      ((poItemsForReceiptData ?? []) as PurchaseOrderItemRow[]).map((row) => [row.id, row])
+    );
+  }
 
   const items = productIds
     .map((productId, index) => {
       if (!productId) return null;
-      const quantityReceived = Number(quantities[index] ?? 0);
-      if (!Number.isFinite(quantityReceived) || quantityReceived <= 0) return null;
+      const inputQty = Number(quantities[index] ?? 0);
+      if (!Number.isFinite(inputQty) || inputQty <= 0) return null;
 
       const product = productMap.get(productId);
       const profile = profileMap.get(productId);
-      const stockUnitCode = String(product?.stock_unit_code ?? product?.unit ?? "un").trim().toLowerCase();
+      const poItemId = poItemIds[index] || "";
+      const poItem = poItemId ? poItemMap.get(poItemId) : null;
+
+      if (purchaseOrderId) {
+        if (!poItem) {
+          redirect("/receipts?error=" + encodeURIComponent("Hay una linea que no pertenece a la orden de compra seleccionada."));
+        }
+
+        if (poItem.product_id !== productId) {
+          redirect("/receipts?error=" + encodeURIComponent("Hay una linea cuyo producto no coincide con la orden de compra."));
+        }
+      }
+
+      const fallbackStockUnitCode = String(product?.stock_unit_code ?? product?.unit ?? "un").trim().toLowerCase();
+
+      const stockUnitCode = purchaseOrderId
+        ? String(poItem?.stock_unit_code ?? poItem?.input_unit_code ?? fallbackStockUnitCode).trim().toLowerCase()
+        : stockUnitCodesFromForm[index] || fallbackStockUnitCode || "un";
+
+      const inputUnitCode = purchaseOrderId
+        ? String(poItem?.input_unit_code ?? stockUnitCode).trim().toLowerCase()
+        : inputUnitCodes[index] || stockUnitCode;
+
+      const inputUnitLabel = purchaseOrderId
+        ? String(poItem?.input_unit_label ?? poItem?.unit ?? inputUnitCode).trim()
+        : inputUnitLabels[index] || inputUnitCode;
+
+      const conversionFactorToStockRaw = purchaseOrderId
+        ? Number(poItem?.conversion_factor_to_stock ?? 0)
+        : Number(conversionFactorsToStock[index] ?? 0);
+
+      const conversionFactorToStock =
+        Number.isFinite(conversionFactorToStockRaw) && conversionFactorToStockRaw > 0
+          ? conversionFactorToStockRaw
+          : 1;
+
+      const quantityReceived = roundQuantity(inputQty * conversionFactorToStock, 6);
       const defaultCost = Number(product?.cost ?? 0);
-      const unitCostRaw = Number(unitCosts[index] ?? 0);
-      const stockUnitCost = unitCostRaw > 0 ? unitCostRaw : defaultCost;
+      const inputUnitCostRaw = Number(unitCosts[index] ?? poItem?.unit_cost ?? 0);
+      const inputUnitCost =
+        inputUnitCostRaw > 0
+          ? inputUnitCostRaw
+          : defaultCost > 0
+            ? defaultCost * conversionFactorToStock
+            : 0;
+      const stockUnitCost =
+        inputUnitCost > 0 && conversionFactorToStock > 0
+          ? inputUnitCost / conversionFactorToStock
+          : defaultCost > 0
+            ? defaultCost
+            : 0;
       const lotNumber = lotNumbers[index] || null;
       const expiryDate = expiryDates[index] || null;
 
@@ -305,13 +391,18 @@ async function createReceipt(formData: FormData) {
         product_id: productId,
         location_id: locationIds[index] || "",
         location_position_id: locationPositionIds[index] || null,
+        input_qty: inputQty,
+        input_unit_code: inputUnitCode,
+        input_unit_label: inputUnitLabel,
+        conversion_factor_to_stock: conversionFactorToStock,
         quantity_received: quantityReceived,
         quantity_declared: quantityReceived,
         stock_unit_code: stockUnitCode || "un",
+        input_unit_cost: inputUnitCost > 0 ? inputUnitCost : 0,
         stock_unit_cost: stockUnitCost > 0 ? stockUnitCost : 0,
-        line_total_cost: roundQuantity(quantityReceived * (stockUnitCost > 0 ? stockUnitCost : 0), 6),
-        purchase_order_item_id: poItemIds[index] || null,
-        cost_source: unitCostRaw > 0 ? "manual" : "fallback_product_cost",
+        line_total_cost: roundQuantity(inputQty * (inputUnitCost > 0 ? inputUnitCost : 0), 6),
+        purchase_order_item_id: poItemId || null,
+        cost_source: inputUnitCostRaw > 0 ? "manual" : "fallback_product_cost",
         lot_number: lotNumber,
         expiry_date: expiryDate,
         notes: lineNotes[index] || null,
@@ -421,12 +512,12 @@ async function createReceipt(formData: FormData) {
     location_position_id: item.location_position_id,
     quantity_declared: item.quantity_declared,
     quantity_received: item.quantity_received,
-    unit: item.stock_unit_code,
-    input_qty: item.quantity_received,
-    input_unit_code: item.stock_unit_code,
-    conversion_factor_to_stock: 1,
+    unit: item.input_unit_label || item.input_unit_code,
+    input_qty: item.input_qty,
+    input_unit_code: item.input_unit_code,
+    conversion_factor_to_stock: item.conversion_factor_to_stock,
     stock_unit_code: item.stock_unit_code,
-    input_unit_cost: item.stock_unit_cost,
+    input_unit_cost: item.input_unit_cost,
     stock_unit_cost: item.stock_unit_cost,
     line_total_cost: item.line_total_cost,
     cost_source: item.cost_source,
@@ -447,9 +538,9 @@ async function createReceipt(formData: FormData) {
     location_position_id: item.location_position_id,
     movement_type: "receipt_in",
     quantity: item.quantity_received,
-    input_qty: item.quantity_received,
-    input_unit_code: item.stock_unit_code,
-    conversion_factor_to_stock: 1,
+    input_qty: item.input_qty,
+    input_unit_code: item.input_unit_code,
+    conversion_factor_to_stock: item.conversion_factor_to_stock,
     stock_unit_code: item.stock_unit_code,
     stock_unit_cost: item.stock_unit_cost,
     line_total_cost: item.line_total_cost,
@@ -582,7 +673,7 @@ async function createReceipt(formData: FormData) {
     for (const row of items) {
       if (!row.purchase_order_item_id) continue;
       const previous = receivedByPoItem.get(row.purchase_order_item_id) ?? 0;
-      receivedByPoItem.set(row.purchase_order_item_id, previous + row.quantity_received);
+      receivedByPoItem.set(row.purchase_order_item_id, previous + row.input_qty);
     }
 
     for (const [poItemId, qtyReceived] of receivedByPoItem.entries()) {
@@ -754,6 +845,11 @@ export default async function ReceiptsPage({
     quantity: number;
     unitCost: number;
     purchaseOrderItemId: string;
+    presentationId: string;
+    inputUnitCode: string;
+    inputUnitLabel: string;
+    conversionFactorToStock: number;
+    stockUnitCode: string;
   }> = [];
 
   if (purchaseOrderId) {
@@ -777,7 +873,7 @@ export default async function ReceiptsPage({
 
       const { data: poItemsData } = await supabase
         .from("purchase_order_items")
-        .select("id,product_id,quantity_ordered,quantity_received,unit_cost")
+        .select("id,product_id,quantity_ordered,quantity_received,unit_cost,unit,input_uom_profile_id,input_unit_code,input_unit_label,conversion_factor_to_stock,stock_unit_code,stock_quantity_ordered,stock_unit_cost")
         .eq("purchase_order_id", purchaseOrderId)
         .order("created_at", { ascending: true });
       const poItems = (poItemsData ?? []) as PurchaseOrderItemRow[];
@@ -792,6 +888,14 @@ export default async function ReceiptsPage({
             quantity: pending,
             unitCost: Number(row.unit_cost ?? 0),
             purchaseOrderItemId: row.id,
+            presentationId: String(row.input_uom_profile_id ?? ""),
+            inputUnitCode: String(row.input_unit_code ?? row.stock_unit_code ?? "").trim().toLowerCase(),
+            inputUnitLabel: String(row.input_unit_label ?? row.unit ?? row.input_unit_code ?? "").trim(),
+            conversionFactorToStock:
+              Number(row.conversion_factor_to_stock ?? 0) > 0
+                ? Number(row.conversion_factor_to_stock)
+                : 1,
+            stockUnitCode: String(row.stock_unit_code ?? row.input_unit_code ?? "").trim().toLowerCase(),
           };
         })
         .filter((row): row is NonNullable<typeof row> => Boolean(row));

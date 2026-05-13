@@ -5,12 +5,38 @@ import { requireAppAccess } from "@/lib/auth/guard";
 import { normalizeSitesFromEmployeeSites, type EmployeeSiteRow } from "@/lib/supabase/employee-sites";
 import { updatePurchaseOrder } from "../../actions";
 import type { PurchaseOrderWithRelations } from "../../_lib/types";
-import type { PurchaseOrderItemWithProduct } from "../../_lib/types";
 
 export const dynamic = "force-dynamic";
 
 const APP_ID = "origo";
 const RETURN_TO = "/login";
+
+type ProductPresentationOption = {
+  id: string;
+  product_id: string;
+  label: string;
+  input_unit_code: string;
+  qty_in_stock_unit: number;
+  is_default: boolean;
+};
+
+type PurchaseOrderEditItemRow = {
+  id: string;
+  product_id: string;
+  quantity_ordered: number | null;
+  unit_cost: number | null;
+  unit: string | null;
+  input_uom_profile_id: string | null;
+  products?: { id: string; name: string | null; sku: string | null } | { id: string; name: string | null; sku: string | null }[] | null;
+};
+
+function normalizePresentationLabel(value: string | null | undefined): string {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
 
 export default async function EditPurchaseOrderPage({
   params,
@@ -65,11 +91,11 @@ export default async function EditPurchaseOrderPage({
 
   const { data: items } = await supabase
     .from("purchase_order_items")
-    .select("id,product_id,quantity_ordered,unit_cost,unit,products(id,name,sku)")
+    .select("id,product_id,quantity_ordered,unit_cost,unit,input_uom_profile_id,products(id,name,sku)")
     .eq("purchase_order_id", id)
     .order("created_at", { ascending: true });
 
-  const lineItems = (items ?? []) as unknown as PurchaseOrderItemWithProduct[];
+  const lineItems = (items ?? []) as unknown as PurchaseOrderEditItemRow[];
 
   const [suppliersRes, sitesRes, productsRes] = await Promise.all([
     supabase.from("suppliers").select("id,name").eq("is_active", true).order("name"),
@@ -92,12 +118,23 @@ export default async function EditPurchaseOrderPage({
     cost: number | null;
   }[];
   const productIds = products.map((product) => product.id);
-  const { data: supplierLinksData } = productIds.length
-    ? await supabase
+  const [{ data: supplierLinksData }, { data: productPresentationsData }] = productIds.length
+    ? await Promise.all([
+      supabase
         .from("product_suppliers")
         .select("product_id,supplier_id,is_primary")
+        .in("product_id", productIds),
+      supabase
+        .from("product_uom_profiles")
+        .select("id,product_id,label,input_unit_code,qty_in_stock_unit,is_default")
         .in("product_id", productIds)
-    : { data: [] };
+        .eq("source", "manual")
+        .eq("usage_context", "general")
+        .eq("is_active", true)
+        .order("is_default", { ascending: false })
+        .order("label", { ascending: true }),
+    ])
+    : [{ data: [] }, { data: [] }];
   const supplierIdsByProduct = new Map<string, Set<string>>();
   for (const row of (supplierLinksData ?? []) as Array<{ product_id: string; supplier_id: string; is_primary?: boolean | null }>) {
     const productId = String(row.product_id ?? "").trim();
@@ -107,9 +144,39 @@ export default async function EditPurchaseOrderPage({
     current.add(supplierId);
     supplierIdsByProduct.set(productId, current);
   }
+  const presentationsByProduct = new Map<string, ProductPresentationOption[]>();
+
+  for (const row of (productPresentationsData ?? []) as ProductPresentationOption[]) {
+    const productId = String(row.product_id ?? "").trim();
+    if (!productId) continue;
+
+    const current = presentationsByProduct.get(productId) ?? [];
+    current.push({
+      id: row.id,
+      product_id: row.product_id,
+      label: row.label,
+      input_unit_code: row.input_unit_code,
+      qty_in_stock_unit: Number(row.qty_in_stock_unit ?? 0),
+      is_default: Boolean(row.is_default),
+    });
+    presentationsByProduct.set(productId, current);
+  }
+
+  const presentationIdByProductAndLabel = new Map<string, string>();
+
+  for (const [productId, presentations] of presentationsByProduct.entries()) {
+    for (const presentation of presentations) {
+      const key = `${productId}::${normalizePresentationLabel(presentation.label)}`;
+      if (!presentationIdByProductAndLabel.has(key)) {
+        presentationIdByProductAndLabel.set(key, presentation.id);
+      }
+    }
+  }
+
   const productsWithSupplierLinks = products.map((product) => ({
     ...product,
     supplier_ids: Array.from(supplierIdsByProduct.get(product.id) ?? []),
+    presentations: presentationsByProduct.get(product.id) ?? [],
   }));
 
   const expectedAt = order.expected_at ? new Date(order.expected_at).toISOString().slice(0, 10) : "";
@@ -146,12 +213,20 @@ export default async function EditPurchaseOrderPage({
           site_id: order.site_id,
           expected_at: expectedAt,
           notes: order.notes ?? "",
-          lines: lineItems.map((item) => ({
-            product_id: item.product_id,
-            quantity: Number(item.quantity_ordered ?? 0),
-            unit_cost: Number(item.unit_cost ?? 0),
-            unit: item.unit ?? "",
-          })),
+          lines: lineItems.map((item) => {
+            const unitLabel = String(item.unit ?? "").trim();
+            const fallbackPresentationId = presentationIdByProductAndLabel.get(
+              `${item.product_id}::${normalizePresentationLabel(unitLabel)}`
+            );
+
+            return {
+              product_id: item.product_id,
+              quantity: Number(item.quantity_ordered ?? 0),
+              unit_cost: Number(item.unit_cost ?? 0),
+              unit: unitLabel,
+              presentation_id: item.input_uom_profile_id ?? fallbackPresentationId ?? "",
+            };
+          }),
         }}
       />
     </div>

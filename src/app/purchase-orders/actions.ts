@@ -25,6 +25,163 @@ function parseNum(v: FormDataEntryValue | null): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+type SupabaseClient = Awaited<ReturnType<typeof createClient>>;
+
+type ProductPresentationRow = {
+  id: string;
+  product_id: string;
+  label: string | null;
+  input_unit_code: string | null;
+  qty_in_stock_unit: number | null;
+  is_active: boolean | null;
+  source: string | null;
+  usage_context: string | null;
+};
+
+type ProductStockRow = {
+  id: string;
+  unit: string | null;
+  stock_unit_code: string | null;
+};
+
+type PurchaseOrderItemInput = {
+  product_id: string;
+  presentation_id: string;
+  quantity_ordered: number;
+  unit_cost: number;
+  unit: string;
+  input_unit_code: string;
+  input_unit_label: string;
+  conversion_factor_to_stock: number;
+  stock_unit_code: string;
+  base_quantity_ordered: number;
+  stock_unit_cost: number;
+  line_total: number;
+};
+
+async function buildPurchaseOrderItemsFromForm(params: {
+  supabase: SupabaseClient;
+  formData: FormData;
+  errorHref: string;
+}): Promise<PurchaseOrderItemInput[]> {
+  const productIds = params.formData.getAll("item_product_id").map((v) => String(v).trim());
+  const presentationIds = params.formData
+    .getAll("item_presentation_id")
+    .map((v) => String(v).trim());
+  const qtys = params.formData.getAll("item_quantity").map((v) => parseNum(v));
+  const costs = params.formData.getAll("item_unit_cost").map((v) => parseNum(v) ?? 0);
+
+  const requestedPresentationIds = Array.from(new Set(presentationIds.filter(Boolean)));
+  const requestedProductIds = Array.from(new Set(productIds.filter(Boolean)));
+
+  if (!requestedPresentationIds.length && productIds.some(Boolean)) {
+    redirect(`${params.errorHref}?error=${encodeURIComponent("Cada linea debe tener una presentacion aprobada.")}`);
+  }
+
+  const [{ data: presentationRows, error: presentationErr }, { data: productRows, error: productErr }] =
+    await Promise.all([
+      requestedPresentationIds.length
+        ? params.supabase
+          .from("product_uom_profiles")
+          .select("id,product_id,label,input_unit_code,qty_in_stock_unit,is_active,source,usage_context")
+          .in("id", requestedPresentationIds)
+          .eq("is_active", true)
+          .eq("source", "manual")
+          .eq("usage_context", "general")
+        : Promise.resolve({ data: [] as ProductPresentationRow[], error: null }),
+      requestedProductIds.length
+        ? params.supabase
+          .from("products")
+          .select("id,unit,stock_unit_code")
+          .in("id", requestedProductIds)
+        : Promise.resolve({ data: [] as ProductStockRow[], error: null }),
+    ]);
+
+  if (presentationErr) {
+    redirect(`${params.errorHref}?error=${encodeURIComponent(presentationErr.message)}`);
+  }
+
+  if (productErr) {
+    redirect(`${params.errorHref}?error=${encodeURIComponent(productErr.message)}`);
+  }
+
+  const presentationById = new Map(
+    ((presentationRows ?? []) as ProductPresentationRow[]).map((row) => [row.id, row])
+  );
+
+  const productById = new Map(
+    ((productRows ?? []) as ProductStockRow[]).map((row) => [row.id, row])
+  );
+
+  const items: PurchaseOrderItemInput[] = [];
+
+  for (let i = 0; i < productIds.length; i += 1) {
+    const productId = productIds[i];
+    const presentationId = presentationIds[i];
+    const qty = qtys[i];
+
+    if (!productId && (qty == null || qty <= 0)) continue;
+    if (!productId || qty == null || qty <= 0) continue;
+
+    if (!presentationId) {
+      redirect(`${params.errorHref}?error=${encodeURIComponent("Cada linea debe tener una presentacion aprobada.")}`);
+    }
+
+    const presentation = presentationById.get(presentationId);
+
+    if (!presentation || presentation.product_id !== productId) {
+      redirect(
+        `${params.errorHref}?error=${encodeURIComponent(
+          "Hay una presentacion invalida o que no pertenece al producto seleccionado."
+        )}`
+      );
+    }
+
+    const product = productById.get(productId);
+    const presentationLabel = String(presentation.label ?? "").trim();
+    const stockUnitCode = String(product?.stock_unit_code ?? product?.unit ?? presentation.input_unit_code ?? "un")
+      .trim()
+      .toLowerCase();
+    const inputUnitCode = String(presentation.input_unit_code ?? stockUnitCode)
+      .trim()
+      .toLowerCase();
+    const conversionFactorToStock = Number(presentation.qty_in_stock_unit ?? 0);
+    const unitCost = Number(costs[i] ?? 0);
+
+    if (!presentationLabel) {
+      redirect(`${params.errorHref}?error=${encodeURIComponent("Hay una presentacion sin nombre valido.")}`);
+    }
+
+    if (!Number.isFinite(conversionFactorToStock) || conversionFactorToStock <= 0) {
+      redirect(
+        `${params.errorHref}?error=${encodeURIComponent(
+          `La presentacion "${presentationLabel}" no tiene equivalencia valida.`
+        )}`
+      );
+    }
+
+    const baseQuantityOrdered = qty * conversionFactorToStock;
+    const stockUnitCost = unitCost > 0 ? unitCost / conversionFactorToStock : 0;
+
+    items.push({
+      product_id: productId,
+      presentation_id: presentationId,
+      quantity_ordered: qty,
+      unit_cost: unitCost,
+      unit: presentationLabel,
+      input_unit_code: inputUnitCode || stockUnitCode || "un",
+      input_unit_label: presentationLabel,
+      conversion_factor_to_stock: conversionFactorToStock,
+      stock_unit_code: stockUnitCode || inputUnitCode || "un",
+      base_quantity_ordered: baseQuantityOrdered,
+      stock_unit_cost: stockUnitCost,
+      line_total: qty * unitCost,
+    });
+  }
+
+  return items;
+}
+
 export async function createPurchaseOrder(formData: FormData) {
   const supabase = await createClient();
   const { data: userRes } = await supabase.auth.getUser();
@@ -39,6 +196,16 @@ export async function createPurchaseOrder(formData: FormData) {
 
   const expectedAt = (formData.get("expected_at") as string)?.trim() || null;
   const notes = (formData.get("notes") as string)?.trim() || null;
+
+  const items = await buildPurchaseOrderItemsFromForm({
+    supabase,
+    formData,
+    errorHref: "/purchase-orders/new",
+  });
+
+  if (!items.length) {
+    redirect("/purchase-orders/new?error=" + encodeURIComponent("Agrega al menos una linea valida."));
+  }
 
   const { data: po, error: poError } = await supabase
     .from("purchase_orders")
@@ -57,37 +224,25 @@ export async function createPurchaseOrder(formData: FormData) {
     redirect(`/purchase-orders/new?error=${encodeURIComponent(poError?.message ?? "Error al crear")}`);
   }
 
-  const productIds = formData.getAll("item_product_id").map((v) => String(v).trim());
-  const qtys = formData.getAll("item_quantity").map((v) => parseNum(v));
-  const costs = formData.getAll("item_unit_cost").map((v) => parseNum(v) ?? 0);
-  const units = formData.getAll("item_unit").map((v) => String(v).trim() || null);
+  const rows = items.map((it) => ({
+    purchase_order_id: po.id,
+    product_id: it.product_id,
+    quantity_ordered: it.quantity_ordered,
+    unit_cost: it.unit_cost,
+    unit: it.unit,
+    input_uom_profile_id: it.presentation_id,
+    input_unit_code: it.input_unit_code,
+    input_unit_label: it.input_unit_label,
+    conversion_factor_to_stock: it.conversion_factor_to_stock,
+    stock_unit_code: it.stock_unit_code,
+    stock_quantity_ordered: it.base_quantity_ordered,
+    stock_unit_cost: it.stock_unit_cost,
+    line_total: it.line_total,
+  }));
 
-  const items: { product_id: string; quantity_ordered: number; unit_cost: number; unit: string | null }[] = [];
-  for (let i = 0; i < productIds.length; i += 1) {
-    const productId = productIds[i];
-    const qty = qtys[i];
-    if (!productId || qty == null || qty <= 0) continue;
-    items.push({
-      product_id: productId,
-      quantity_ordered: qty,
-      unit_cost: costs[i] ?? 0,
-      unit: units[i] ?? null,
-    });
-  }
-
-  if (items.length) {
-    const rows = items.map((it) => ({
-      purchase_order_id: po.id,
-      product_id: it.product_id,
-      quantity_ordered: it.quantity_ordered,
-      unit_cost: it.unit_cost,
-      unit: it.unit,
-      line_total: it.quantity_ordered * it.unit_cost,
-    }));
-    const { error: itemsError } = await supabase.from("purchase_order_items").insert(rows);
-    if (itemsError) {
-      redirect(`/purchase-orders/new?error=${encodeURIComponent(itemsError.message)}`);
-    }
+  const { error: itemsError } = await supabase.from("purchase_order_items").insert(rows);
+  if (itemsError) {
+    redirect(`/purchase-orders/new?error=${encodeURIComponent(itemsError.message)}`);
   }
 
   const { data: sumRow } = await supabase
@@ -137,6 +292,16 @@ export async function updatePurchaseOrder(id: string, formData: FormData) {
   const expectedAt = (formData.get("expected_at") as string)?.trim() || null;
   const notes = (formData.get("notes") as string)?.trim() || null;
 
+  const items = await buildPurchaseOrderItemsFromForm({
+    supabase,
+    formData,
+    errorHref: `/purchase-orders/${id}/edit`,
+  });
+
+  if (!items.length) {
+    redirect(`/purchase-orders/${id}/edit?error=${encodeURIComponent("Agrega al menos una linea valida.")}`);
+  }
+
   await supabase
     .from("purchase_orders")
     .update({
@@ -147,35 +312,27 @@ export async function updatePurchaseOrder(id: string, formData: FormData) {
     })
     .eq("id", id);
 
-  const productIds = formData.getAll("item_product_id").map((v) => String(v).trim());
-  const qtys = formData.getAll("item_quantity").map((v) => parseNum(v));
-  const costs = formData.getAll("item_unit_cost").map((v) => parseNum(v) ?? 0);
-  const units = formData.getAll("item_unit").map((v) => String(v).trim() || null);
-
-  const items: { product_id: string; quantity_ordered: number; unit_cost: number; unit: string | null }[] = [];
-  for (let i = 0; i < productIds.length; i += 1) {
-    const productId = productIds[i];
-    const qty = qtys[i];
-    if (!productId || qty == null || qty <= 0) continue;
-    items.push({
-      product_id: productId,
-      quantity_ordered: qty,
-      unit_cost: costs[i] ?? 0,
-      unit: units[i] ?? null,
-    });
-  }
-
   await supabase.from("purchase_order_items").delete().eq("purchase_order_id", id);
-  if (items.length) {
-    const rows = items.map((it) => ({
-      purchase_order_id: id,
-      product_id: it.product_id,
-      quantity_ordered: it.quantity_ordered,
-      unit_cost: it.unit_cost,
-      unit: it.unit,
-      line_total: it.quantity_ordered * it.unit_cost,
-    }));
-    await supabase.from("purchase_order_items").insert(rows);
+
+  const rows = items.map((it) => ({
+    purchase_order_id: id,
+    product_id: it.product_id,
+    quantity_ordered: it.quantity_ordered,
+    unit_cost: it.unit_cost,
+    unit: it.unit,
+    input_uom_profile_id: it.presentation_id,
+    input_unit_code: it.input_unit_code,
+    input_unit_label: it.input_unit_label,
+    conversion_factor_to_stock: it.conversion_factor_to_stock,
+    stock_unit_code: it.stock_unit_code,
+    stock_quantity_ordered: it.base_quantity_ordered,
+    stock_unit_cost: it.stock_unit_cost,
+    line_total: it.line_total,
+  }));
+
+  const { error: itemsError } = await supabase.from("purchase_order_items").insert(rows);
+  if (itemsError) {
+    redirect(`/purchase-orders/${id}/edit?error=${encodeURIComponent(itemsError.message)}`);
   }
 
   const { data: sumRow } = await supabase
