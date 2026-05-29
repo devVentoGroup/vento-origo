@@ -11,6 +11,12 @@ export async function requireCanManageSuppliers(
   supabase: SupabaseClient,
   userId: string
 ): Promise<void> {
+  const { data: canManage } = await supabase.rpc("has_permission", {
+    p_permission_code: "origo.suppliers.manage",
+  });
+
+  if (canManage) return;
+
   const { data } = await supabase
     .from("employees")
     .select("role")
