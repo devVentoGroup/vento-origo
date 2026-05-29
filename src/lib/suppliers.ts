@@ -7,15 +7,15 @@ export const ROLES_CAN_MANAGE_SUPPLIERS = [
   "gerente",
 ] as const;
 
-export async function requireCanManageSuppliers(
+export async function canManageSuppliers(
   supabase: SupabaseClient,
   userId: string
-): Promise<void> {
+): Promise<boolean> {
   const { data: canManage } = await supabase.rpc("has_permission", {
     p_permission_code: "origo.suppliers.manage",
   });
 
-  if (canManage) return;
+  if (canManage) return true;
 
   const { data } = await supabase
     .from("employees")
@@ -24,7 +24,14 @@ export async function requireCanManageSuppliers(
     .maybeSingle();
 
   const role = (data?.role as string) ?? "";
-  if (!ROLES_CAN_MANAGE_SUPPLIERS.includes(role as (typeof ROLES_CAN_MANAGE_SUPPLIERS)[number])) {
+  return ROLES_CAN_MANAGE_SUPPLIERS.includes(role as (typeof ROLES_CAN_MANAGE_SUPPLIERS)[number]);
+}
+
+export async function requireCanManageSuppliers(
+  supabase: SupabaseClient,
+  userId: string
+): Promise<void> {
+  if (!(await canManageSuppliers(supabase, userId))) {
     redirect("/suppliers?error=no_permission");
   }
 }

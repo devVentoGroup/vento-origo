@@ -7,12 +7,19 @@ import { requireCanManageSuppliers } from "@/lib/suppliers";
 import { createClient } from "@/lib/supabase/server";
 
 export async function createSupplier(formData: FormData) {
+  const supabase = await createClient();
+  const { data: authRes } = await supabase.auth.getUser();
+  const user = authRes.user ?? null;
+  if (!user) {
+    redirect("/login");
+  }
+  await requireCanManageSuppliers(supabase, user.id);
+
   const name = String(formData.get("name") ?? "").trim();
   if (!name) {
     redirect("/suppliers/new?error=name_required");
   }
 
-  const supabase = await createClient();
   const { error } = await supabase.from("suppliers").insert({
     name,
     tax_id: formData.get("tax_id") ? String(formData.get("tax_id")).trim() || null : null,
@@ -34,12 +41,19 @@ export async function createSupplier(formData: FormData) {
 }
 
 export async function updateSupplier(id: string, formData: FormData) {
+  const supabase = await createClient();
+  const { data: authRes } = await supabase.auth.getUser();
+  const user = authRes.user ?? null;
+  if (!user) {
+    redirect("/login");
+  }
+  await requireCanManageSuppliers(supabase, user.id);
+
   const name = String(formData.get("name") ?? "").trim();
   if (!name) {
     redirect(`/suppliers/${id}/edit?error=name_required`);
   }
 
-  const supabase = await createClient();
   const { error } = await supabase
     .from("suppliers")
     .update({

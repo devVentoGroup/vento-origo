@@ -2,7 +2,7 @@
 
 import { deleteSupplier } from "@/app/suppliers/actions";
 import { requireAppAccess } from "@/lib/auth/guard";
-import { ROLES_CAN_MANAGE_SUPPLIERS } from "@/lib/suppliers";
+import { canManageSuppliers as getCanManageSuppliers } from "@/lib/suppliers";
 import {
   Table,
   TableBody,
@@ -40,15 +40,7 @@ export default async function SuppliersListPage({
 }) {
   const { supabase, user } = await requireAppAccess({ appId: APP_ID, returnTo: RETURN_TO });
 
-  const { data: employee } = await supabase
-    .from("employees")
-    .select("role")
-    .eq("id", user.id)
-    .maybeSingle();
-  const role = (employee?.role as string) ?? "";
-  const canManageSuppliers = ROLES_CAN_MANAGE_SUPPLIERS.includes(
-    role as (typeof ROLES_CAN_MANAGE_SUPPLIERS)[number]
-  );
+  const canManageSuppliers = await getCanManageSuppliers(supabase, user.id);
 
   const sp = (await searchParams) ?? {};
   const q = String(sp.q ?? "").trim().toLowerCase();
@@ -107,7 +99,7 @@ export default async function SuppliersListPage({
 
         {errorParam === "no_permission" ? (
           <div className="ui-alert ui-alert--warn">
-            Solo propietarios y gerentes pueden crear, editar o eliminar proveedores.
+            No tienes permiso para crear, editar o eliminar proveedores.
           </div>
         ) : null}
 
