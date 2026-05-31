@@ -986,7 +986,7 @@ export default async function ReceiptsPage({
     presentationsByProductId.set(row.product_id, presentations);
   }
 
-  const products: ProductFormRow[] = baseProducts.map((product) => ({
+  let products: ProductFormRow[] = baseProducts.map((product) => ({
     ...product,
     supplier_ids: Array.from(supplierIdsByProductId.get(product.id) ?? []),
     presentations: presentationsByProductId.get(product.id) ?? [],
@@ -1104,6 +1104,111 @@ export default async function ReceiptsPage({
         })
         .filter((row): row is NonNullable<typeof row> => Boolean(row));
     }
+  }
+
+  const prefillProductIds = Array.from(new Set(prefillRows.map((row) => row.productId).filter(Boolean)));
+  const existingProductIds = new Set(products.map((product) => product.id));
+  const missingPrefillProductIds = prefillProductIds.filter((productId) => !existingProductIds.has(productId));
+
+  if (missingPrefillProductIds.length > 0) {
+    const [
+      { data: missingProductsData },
+      { data: missingProfileData },
+      { data: missingProductSuppliersData },
+      { data: missingProductUomProfilesData },
+      { data: missingProcurementCostData },
+    ] = await Promise.all([
+      supabase
+        .from("products")
+        .select("id,name,unit,stock_unit_code,cost")
+        .in("id", missingPrefillProductIds),
+      supabase
+        .from("product_inventory_profiles")
+        .select("product_id,lot_tracking,expiry_tracking")
+        .in("product_id", missingPrefillProductIds),
+      supabase
+        .from("product_suppliers")
+        .select("product_id,supplier_id")
+        .in("product_id", missingPrefillProductIds),
+      supabase
+        .from("product_uom_profiles")
+        .select("id,product_id,label,input_unit_code,qty_in_stock_unit")
+        .in("product_id", missingPrefillProductIds)
+        .eq("is_active", true)
+        .order("label", { ascending: true }),
+      supabase
+        .from("procurement_supplier_product_costs")
+        .select("supplier_id,product_id,input_uom_profile_id,input_unit_code,conversion_factor_to_stock,last_net_unit_cost,avg_net_unit_cost,last_stock_unit_cost,avg_stock_unit_cost,last_received_at")
+        .in("product_id", missingPrefillProductIds)
+        .eq("is_active", true),
+    ]);
+
+    const missingProfileByProductId = new Map(
+      ((missingProfileData ?? []) as Array<{
+        product_id: string;
+        lot_tracking?: boolean | null;
+        expiry_tracking?: boolean | null;
+      }>).map((row) => [row.product_id, row])
+    );
+
+    const missingSupplierIdsByProductId = new Map<string, Set<string>>();
+    for (const row of (missingProductSuppliersData ?? []) as ProductSupplierRow[]) {
+      if (!row.product_id || !row.supplier_id) continue;
+      const supplierIds = missingSupplierIdsByProductId.get(row.product_id) ?? new Set<string>();
+      supplierIds.add(row.supplier_id);
+      missingSupplierIdsByProductId.set(row.product_id, supplierIds);
+    }
+
+    const missingCostsByPresentationKey = new Map<string, ProcurementSupplierProductCostRow>();
+    for (const row of (missingProcurementCostData ?? []) as ProcurementSupplierProductCostRow[]) {
+      if (!row.product_id) continue;
+      const key = [
+        row.product_id,
+        row.input_uom_profile_id ?? "",
+        String(row.input_unit_code ?? "").toLowerCase(),
+        Number(row.conversion_factor_to_stock ?? 0),
+      ].join("|");
+      missingCostsByPresentationKey.set(key, row);
+    }
+
+    const missingPresentationsByProductId = new Map<string, ProductPresentationOption[]>();
+    for (const row of (missingProductUomProfilesData ?? []) as ProductUomProfileRow[]) {
+      const factor = Number(row.qty_in_stock_unit ?? 0);
+      if (!row.product_id || factor <= 0) continue;
+
+      const label = String(row.label ?? row.input_unit_code ?? "Presentación").trim();
+      const inputUnitCode = String(row.input_unit_code ?? label).trim().toLowerCase();
+      const key = [row.product_id, row.id, inputUnitCode, factor].join("|");
+      const cost = missingCostsByPresentationKey.get(key);
+
+      const presentations = missingPresentationsByProductId.get(row.product_id) ?? [];
+      presentations.push({
+        id: row.id,
+        product_id: row.product_id,
+        label,
+        input_unit_code: inputUnitCode,
+        qty_in_stock_unit: factor,
+        last_net_unit_cost: cost?.last_net_unit_cost ?? null,
+        avg_net_unit_cost: cost?.avg_net_unit_cost ?? null,
+        last_stock_unit_cost: cost?.last_stock_unit_cost ?? null,
+        avg_stock_unit_cost: cost?.avg_stock_unit_cost ?? null,
+        last_received_at: cost?.last_received_at ?? null,
+      });
+      missingPresentationsByProductId.set(row.product_id, presentations);
+    }
+
+    const missingProducts = ((missingProductsData ?? []) as ProductRow[]).map((product) => {
+      const profile = missingProfileByProductId.get(product.id);
+      return {
+        ...product,
+        lot_tracking: Boolean(profile?.lot_tracking),
+        expiry_tracking: Boolean(profile?.expiry_tracking),
+        supplier_ids: Array.from(missingSupplierIdsByProductId.get(product.id) ?? []),
+        presentations: missingPresentationsByProductId.get(product.id) ?? [],
+      };
+    });
+
+    products = [...products, ...missingProducts];
   }
 
   const { data: purchaseOrdersData } = await supabase
