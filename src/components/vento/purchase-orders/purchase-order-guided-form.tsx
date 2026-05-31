@@ -286,7 +286,7 @@ export function PurchaseOrderGuidedForm({
       <input type="hidden" name="notes" value={notes} />
 
       {lineRows.map((row, index) => (
-        <div key={`line-hidden-${index}`}>
+        <div key={`line-hidden-${index}`} className="hidden">
           <input type="hidden" name="item_product_id" value={row.product_id} />
           <input type="hidden" name="item_presentation_id" value={row.presentation_id} />
           <input type="hidden" name="item_quantity" value={row.quantity} />
