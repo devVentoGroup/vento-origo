@@ -38,6 +38,46 @@ type ProductRow = {
   cost: number | null;
 };
 
+type ProductPresentationOption = {
+  id: string;
+  product_id: string;
+  label: string;
+  input_unit_code: string;
+  qty_in_stock_unit: number;
+  is_default?: boolean | null;
+  last_net_unit_cost?: number | null;
+  avg_net_unit_cost?: number | null;
+  last_stock_unit_cost?: number | null;
+  avg_stock_unit_cost?: number | null;
+  last_received_at?: string | null;
+};
+
+type ProductSupplierRow = {
+  product_id: string;
+  supplier_id: string;
+};
+
+type ProductUomProfileRow = {
+  id: string;
+  product_id: string;
+  label: string | null;
+  input_unit_code: string | null;
+  qty_in_stock_unit: number | null;
+};
+
+type ProcurementSupplierProductCostRow = {
+  supplier_id: string;
+  product_id: string;
+  input_uom_profile_id: string | null;
+  input_unit_code: string | null;
+  conversion_factor_to_stock: number | null;
+  last_net_unit_cost: number | null;
+  avg_net_unit_cost: number | null;
+  last_stock_unit_cost: number | null;
+  avg_stock_unit_cost: number | null;
+  last_received_at: string | null;
+};
+
 type ProfileRow = {
   product_id: string;
   track_inventory: boolean;
@@ -56,6 +96,8 @@ type ProductProfileWithProduct = {
 type ProductFormRow = ProductRow & {
   lot_tracking: boolean;
   expiry_tracking: boolean;
+  supplier_ids: string[];
+  presentations: ProductPresentationOption[];
 };
 
 type SupplierRow = {
@@ -280,6 +322,33 @@ async function createReceipt(formData: FormData) {
   const lineNotes = formData.getAll("item_notes").map((value) => String(value).trim());
   const lotNumbers = formData.getAll("item_lot_number").map((value) => String(value).trim());
   const expiryDates = formData.getAll("item_expiry_date").map((value) => String(value).trim());
+  const inputUomProfileIds = formData
+    .getAll("item_presentation_id")
+    .map((value) => String(value).trim());
+  const costInputModes = formData
+    .getAll("item_cost_input_mode")
+    .map((value) => (String(value).trim() === "gross" ? "gross" : "net"));
+  const taxIncludedValues = formData
+    .getAll("item_tax_included")
+    .map((value) => String(value).trim() === "true");
+  const taxRates = formData
+    .getAll("item_tax_rate")
+    .map((value) => asNumber(String(value).trim()));
+  const netUnitCosts = formData
+    .getAll("item_net_unit_cost")
+    .map((value) => asNumber(String(value).trim()));
+  const grossUnitCosts = formData
+    .getAll("item_gross_unit_cost")
+    .map((value) => asNumber(String(value).trim()));
+  const netTotalCosts = formData
+    .getAll("item_net_total_cost")
+    .map((value) => asNumber(String(value).trim()));
+  const grossTotalCosts = formData
+    .getAll("item_gross_total_cost")
+    .map((value) => asNumber(String(value).trim()));
+  const taxAmounts = formData
+    .getAll("item_tax_amount")
+    .map((value) => asNumber(String(value).trim()));
 
   const productLookupIds = Array.from(new Set(productIds.filter(Boolean)));
   const { data: productRowsData } = productLookupIds.length
@@ -363,18 +432,51 @@ async function createReceipt(formData: FormData) {
       const quantityReceived = roundQuantity(inputQty * conversionFactorToStock, 6);
       const defaultCost = Number(product?.cost ?? 0);
       const inputUnitCostRaw = Number(unitCosts[index] ?? poItem?.unit_cost ?? 0);
-      const inputUnitCost =
+      const taxRate = Math.max(0, Number(taxRates[index] ?? 0));
+      const taxIncluded = Boolean(taxIncludedValues[index]);
+      const costInputMode = costInputModes[index] === "gross" ? "gross" : "net";
+
+      const fallbackInputUnitCost =
         inputUnitCostRaw > 0
           ? inputUnitCostRaw
           : defaultCost > 0
             ? defaultCost * conversionFactorToStock
             : 0;
+
+      const computedNetUnitCost =
+        Number(netUnitCosts[index] ?? 0) > 0
+          ? Number(netUnitCosts[index])
+          : taxIncluded && taxRate > 0
+            ? fallbackInputUnitCost / (1 + taxRate / 100)
+            : fallbackInputUnitCost;
+
+      const computedGrossUnitCost =
+        Number(grossUnitCosts[index] ?? 0) > 0
+          ? Number(grossUnitCosts[index])
+          : taxIncluded
+            ? fallbackInputUnitCost
+            : fallbackInputUnitCost * (1 + taxRate / 100);
+
       const stockUnitCost =
-        inputUnitCost > 0 && conversionFactorToStock > 0
-          ? inputUnitCost / conversionFactorToStock
+        computedNetUnitCost > 0 && conversionFactorToStock > 0
+          ? computedNetUnitCost / conversionFactorToStock
           : defaultCost > 0
             ? defaultCost
             : 0;
+
+      const netTotalCost =
+        Number(netTotalCosts[index] ?? 0) > 0
+          ? Number(netTotalCosts[index])
+          : roundQuantity(inputQty * computedNetUnitCost, 6);
+      const grossTotalCost =
+        Number(grossTotalCosts[index] ?? 0) > 0
+          ? Number(grossTotalCosts[index])
+          : roundQuantity(inputQty * computedGrossUnitCost, 6);
+      const taxAmount =
+        Number(taxAmounts[index] ?? 0) > 0
+          ? Number(taxAmounts[index])
+          : roundQuantity(Math.max(0, grossTotalCost - netTotalCost), 6);
+
       const lotNumber = lotNumbers[index] || null;
       const expiryDate = expiryDates[index] || null;
 
@@ -398,9 +500,18 @@ async function createReceipt(formData: FormData) {
         quantity_received: quantityReceived,
         quantity_declared: quantityReceived,
         stock_unit_code: stockUnitCode || "un",
-        input_unit_cost: inputUnitCost > 0 ? inputUnitCost : 0,
-        stock_unit_cost: stockUnitCost > 0 ? stockUnitCost : 0,
-        line_total_cost: roundQuantity(inputQty * (inputUnitCost > 0 ? inputUnitCost : 0), 6),
+        input_uom_profile_id: inputUomProfileIds[index] || poItem?.input_uom_profile_id || null,
+        input_unit_cost: computedNetUnitCost > 0 ? roundQuantity(computedNetUnitCost, 6) : 0,
+        stock_unit_cost: stockUnitCost > 0 ? roundQuantity(stockUnitCost, 6) : 0,
+        line_total_cost: netTotalCost,
+        tax_included: taxIncluded,
+        tax_rate: taxRate,
+        cost_input_mode: costInputMode,
+        net_unit_cost: computedNetUnitCost > 0 ? roundQuantity(computedNetUnitCost, 6) : 0,
+        gross_unit_cost: computedGrossUnitCost > 0 ? roundQuantity(computedGrossUnitCost, 6) : 0,
+        net_total_cost: netTotalCost,
+        gross_total_cost: grossTotalCost,
+        tax_amount: taxAmount,
         purchase_order_item_id: poItemId || null,
         cost_source: inputUnitCostRaw > 0 ? "manual" : "fallback_product_cost",
         lot_number: lotNumber,
@@ -517,9 +628,18 @@ async function createReceipt(formData: FormData) {
     input_unit_code: item.input_unit_code,
     conversion_factor_to_stock: item.conversion_factor_to_stock,
     stock_unit_code: item.stock_unit_code,
+    input_uom_profile_id: item.input_uom_profile_id,
     input_unit_cost: item.input_unit_cost,
     stock_unit_cost: item.stock_unit_cost,
     line_total_cost: item.line_total_cost,
+    tax_included: item.tax_included,
+    tax_rate: item.tax_rate,
+    cost_input_mode: item.cost_input_mode,
+    net_unit_cost: item.net_unit_cost,
+    gross_unit_cost: item.gross_unit_cost,
+    net_total_cost: item.net_total_cost,
+    gross_total_cost: item.gross_total_cost,
+    tax_amount: item.tax_amount,
     cost_source: item.cost_source,
     currency: "COP",
     purchase_order_item_id: item.purchase_order_item_id,
@@ -777,7 +897,7 @@ export default async function ReceiptsPage({
   ]);
 
   const suppliers = (suppliersData ?? []) as SupplierRow[];
-  const products = ((productsData ?? []) as ProductProfileWithProduct[])
+  const baseProducts = ((productsData ?? []) as ProductProfileWithProduct[])
     .map((row) => {
       const product = Array.isArray(row.products) ? row.products[0] ?? null : row.products;
       if (!product) return null;
@@ -785,9 +905,93 @@ export default async function ReceiptsPage({
         ...product,
         lot_tracking: Boolean(row.lot_tracking),
         expiry_tracking: Boolean(row.expiry_tracking),
-      } satisfies ProductFormRow;
+      };
     })
-    .filter((row): row is ProductFormRow => Boolean(row));
+    .filter((row): row is ProductRow & { lot_tracking: boolean; expiry_tracking: boolean } => Boolean(row));
+
+  const productIdsForCatalog = baseProducts.map((product) => product.id);
+
+  const [
+    { data: productSuppliersData },
+    { data: productUomProfilesData },
+    { data: procurementCostData },
+  ] =
+    productIdsForCatalog.length > 0
+      ? await Promise.all([
+          supabase
+            .from("product_suppliers")
+            .select("product_id,supplier_id")
+            .in("product_id", productIdsForCatalog),
+          supabase
+            .from("product_uom_profiles")
+            .select("id,product_id,label,input_unit_code,qty_in_stock_unit")
+            .in("product_id", productIdsForCatalog)
+            .eq("is_active", true)
+            .order("label", { ascending: true }),
+          supabase
+            .from("procurement_supplier_product_costs")
+            .select("supplier_id,product_id,input_uom_profile_id,input_unit_code,conversion_factor_to_stock,last_net_unit_cost,avg_net_unit_cost,last_stock_unit_cost,avg_stock_unit_cost,last_received_at")
+            .in("product_id", productIdsForCatalog)
+            .eq("is_active", true),
+        ])
+      : [
+          { data: [] as ProductSupplierRow[] },
+          { data: [] as ProductUomProfileRow[] },
+          { data: [] as ProcurementSupplierProductCostRow[] },
+        ];
+
+  const supplierIdsByProductId = new Map<string, Set<string>>();
+  for (const row of (productSuppliersData ?? []) as ProductSupplierRow[]) {
+    if (!row.product_id || !row.supplier_id) continue;
+    const supplierIds = supplierIdsByProductId.get(row.product_id) ?? new Set<string>();
+    supplierIds.add(row.supplier_id);
+    supplierIdsByProductId.set(row.product_id, supplierIds);
+  }
+
+  const costsByPresentationKey = new Map<string, ProcurementSupplierProductCostRow>();
+  for (const row of (procurementCostData ?? []) as ProcurementSupplierProductCostRow[]) {
+    if (!row.product_id) continue;
+    const key = [
+      row.product_id,
+      row.input_uom_profile_id ?? "",
+      String(row.input_unit_code ?? "").toLowerCase(),
+      Number(row.conversion_factor_to_stock ?? 0),
+    ].join("|");
+    costsByPresentationKey.set(key, row);
+  }
+
+  const presentationsByProductId = new Map<string, ProductPresentationOption[]>();
+  for (const row of (productUomProfilesData ?? []) as ProductUomProfileRow[]) {
+    const factor = Number(row.qty_in_stock_unit ?? 0);
+    if (!row.product_id || factor <= 0) continue;
+
+    const label = String(row.label ?? row.input_unit_code ?? "Presentación").trim();
+    const inputUnitCode = String(row.input_unit_code ?? label).trim().toLowerCase();
+    const key = [row.product_id, row.id, inputUnitCode, factor].join("|");
+    const cost = costsByPresentationKey.get(key);
+
+    const presentations = presentationsByProductId.get(row.product_id) ?? [];
+    presentations.push({
+      id: row.id,
+      product_id: row.product_id,
+      label,
+      input_unit_code: inputUnitCode,
+      qty_in_stock_unit: factor,
+      last_net_unit_cost: cost?.last_net_unit_cost ?? null,
+      avg_net_unit_cost: cost?.avg_net_unit_cost ?? null,
+      last_stock_unit_cost: cost?.last_stock_unit_cost ?? null,
+      avg_stock_unit_cost: cost?.avg_stock_unit_cost ?? null,
+      last_received_at: cost?.last_received_at ?? null,
+    });
+    presentationsByProductId.set(row.product_id, presentations);
+  }
+
+  const products: ProductFormRow[] = baseProducts.map((product) => ({
+    ...product,
+    supplier_ids: Array.from(supplierIdsByProductId.get(product.id) ?? []),
+    presentations: presentationsByProductId.get(product.id) ?? [],
+  }));
+
   const locations = ((locationsData ?? []) as LocationRow[]).sort((a, b) => {
     const aOrder = OPERATIONAL_RECEIPT_LOCATION_ORDER.get(String(a.code ?? "")) ?? Number.MAX_SAFE_INTEGER;
     const bOrder = OPERATIONAL_RECEIPT_LOCATION_ORDER.get(String(b.code ?? "")) ?? Number.MAX_SAFE_INTEGER;
