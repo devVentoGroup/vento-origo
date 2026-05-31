@@ -161,6 +161,171 @@ type EntryRow = {
   created_at: string | null;
 };
 
+type MasterDataRequestKind = "new_product" | "new_presentation";
+
+type MasterDataRequestPayload = {
+  id?: string;
+  kind?: string;
+  status?: string;
+  source?: string;
+  siteId?: string;
+  supplierId?: string;
+  supplierName?: string | null;
+  lineIndex?: number | string;
+  productId?: string | null;
+  productName?: string | null;
+  requestedLabel?: string;
+  inputUnitCode?: string;
+  inputUnitLabel?: string;
+  conversionFactorToStock?: number | string | null;
+  stockUnitCode?: string;
+  unitCost?: number | string | null;
+  notes?: string | null;
+  createdAt?: string;
+};
+
+type NormalizedMasterDataRequest = {
+  kind: MasterDataRequestKind;
+  lineIndex: number;
+  productId: string | null;
+  productName: string | null;
+  requestedLabel: string;
+  inputUnitCode: string | null;
+  inputUnitLabel: string | null;
+  conversionFactorToStock: number | null;
+  stockUnitCode: string | null;
+  unitCost: number | null;
+  notes: string | null;
+  payload: MasterDataRequestPayload;
+};
+
+function asCleanString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function asNullableCleanString(value: unknown): string | null {
+  const text = asCleanString(value);
+  return text || null;
+}
+
+function asPositiveNumberOrNull(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function normalizeMasterDataRequestPayloads(formData: FormData): {
+  requests: NormalizedMasterDataRequest[];
+  errorMessage: string | null;
+} {
+  const rawPayloads = formData
+    .getAll("master_data_request_payload")
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter(Boolean);
+
+  const requests: NormalizedMasterDataRequest[] = [];
+
+  for (let index = 0; index < rawPayloads.length; index += 1) {
+    const rawPayload = rawPayloads[index];
+    let payload: MasterDataRequestPayload;
+
+    try {
+      const parsed = JSON.parse(rawPayload);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return {
+          requests: [],
+          errorMessage: "Hay una solicitud de maestro de datos con formato invalido.",
+        };
+      }
+      payload = parsed as MasterDataRequestPayload;
+    } catch {
+      return {
+        requests: [],
+        errorMessage: "Hay una solicitud de maestro de datos que no se pudo leer.",
+      };
+    }
+
+    const kind = payload.kind === "new_product" || payload.kind === "new_presentation"
+      ? payload.kind
+      : null;
+    if (!kind) {
+      return {
+        requests: [],
+        errorMessage: "Hay una solicitud de maestro de datos con tipo invalido.",
+      };
+    }
+
+    const requestedLabel = asCleanString(payload.requestedLabel);
+    if (!requestedLabel) {
+      return {
+        requests: [],
+        errorMessage: "Hay una solicitud de maestro de datos sin nombre.",
+      };
+    }
+
+    const lineIndex = Number(payload.lineIndex ?? index);
+    const safeLineIndex = Number.isInteger(lineIndex) && lineIndex >= 0 ? lineIndex : index;
+    const productId = asNullableCleanString(payload.productId);
+    const productName = asNullableCleanString(payload.productName);
+    const inputUnitLabel = asNullableCleanString(payload.inputUnitLabel);
+    const inputUnitCode = asNullableCleanString(payload.inputUnitCode);
+    const stockUnitCode = asNullableCleanString(payload.stockUnitCode);
+    const conversionFactorToStock = asPositiveNumberOrNull(payload.conversionFactorToStock);
+    const unitCost = asPositiveNumberOrNull(payload.unitCost);
+    const notes = asNullableCleanString(payload.notes);
+
+    if (kind === "new_presentation") {
+      if (!productId) {
+        return {
+          requests: [],
+          errorMessage: "La solicitud de nueva presentacion debe estar asociada a un producto existente.",
+        };
+      }
+
+      if (!inputUnitLabel || !stockUnitCode || !conversionFactorToStock) {
+        return {
+          requests: [],
+          errorMessage: "La solicitud de nueva presentacion debe tener unidad, factor a stock y unidad stock.",
+        };
+      }
+    }
+
+    requests.push({
+      kind,
+      lineIndex: safeLineIndex,
+      productId,
+      productName,
+      requestedLabel,
+      inputUnitCode,
+      inputUnitLabel,
+      conversionFactorToStock,
+      stockUnitCode,
+      unitCost,
+      notes,
+      payload,
+    });
+  }
+
+  return { requests, errorMessage: null };
+}
+
+function formatColombiaDateTime(value: string | null | undefined) {
+  if (!value) return "-";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+
+  return new Intl.DateTimeFormat("es-CO", {
+    timeZone: "America/Bogota",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
 function asText(value: FormDataEntryValue | null) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -257,6 +422,28 @@ async function createReceipt(formData: FormData) {
   const supplierName = String(supplierRow?.name ?? "").trim();
   if (!supplierName) {
     redirect("/receipts?error=" + encodeURIComponent("Proveedor no valido."));
+  }
+
+  const { requests: masterDataRequests, errorMessage: masterDataRequestError } =
+    normalizeMasterDataRequestPayloads(formData);
+  if (masterDataRequestError) {
+    redirect("/receipts?error=" + encodeURIComponent(masterDataRequestError));
+  }
+
+  if (masterDataRequests.length > 0) {
+    const { error: masterDataTableErr } = await supabase
+      .from("product_master_review_requests")
+      .select("id")
+      .limit(1);
+
+    if (masterDataTableErr) {
+      redirect(
+        "/receipts?error=" +
+        encodeURIComponent(
+          "No se pudieron preparar las solicitudes de maestro de datos. Aplica la migracion product_master_review_requests antes de usar esta accion."
+        )
+      );
+    }
   }
 
   if (purchaseOrderId) {
@@ -841,6 +1028,50 @@ async function createReceipt(formData: FormData) {
     }
   }
 
+  if (masterDataRequests.length > 0) {
+    const requestRows = masterDataRequests.map((request) => ({
+      request_kind: request.kind,
+      status: "pending_review",
+      source_app: "origo",
+      source_flow: "receipt",
+      site_id: siteId,
+      supplier_id: supplierId || null,
+      product_id: request.productId,
+      source_entry_id: entry.id,
+      line_index: request.lineIndex,
+      requested_label: request.requestedLabel,
+      input_unit_code: request.inputUnitCode,
+      input_unit_label: request.inputUnitLabel,
+      conversion_factor_to_stock: request.conversionFactorToStock,
+      stock_unit_code: request.stockUnitCode,
+      unit_cost: request.unitCost,
+      currency: "COP",
+      notes: request.notes,
+      payload: {
+        ...request.payload,
+        server_site_id: siteId,
+        server_supplier_id: supplierId,
+        server_supplier_name: supplierName,
+        server_source_entry_id: entry.id,
+      },
+      created_by: user.id,
+    }));
+
+    const { error: requestInsertErr } = await supabase
+      .from("product_master_review_requests")
+      .insert(requestRows);
+
+    if (requestInsertErr) {
+      redirect(
+        "/receipts?error=" +
+        encodeURIComponent(
+          "La recepcion se registro, pero no se pudieron guardar las solicitudes de maestro de datos: " +
+          requestInsertErr.message
+        )
+      );
+    }
+  }
+
   redirect("/receipts?ok=created");
 }
 
@@ -1292,7 +1523,7 @@ export default async function ReceiptsPage({
             <tbody>
               {entryRows.map((entryRow) => (
                 <tr key={entryRow.id} className="border-t border-zinc-200/60">
-                  <td className="py-2 pr-3 font-mono">{entryRow.received_at ?? entryRow.created_at ?? "-"}</td>
+                  <td className="py-2 pr-3 font-mono">{formatColombiaDateTime(entryRow.received_at ?? entryRow.created_at)}</td>
                   <td className="py-2 pr-3">{entryRow.supplier_name ?? "-"}</td>
                   <td className="py-2 pr-3">{entryRow.invoice_number ?? "-"}</td>
                   <td className="py-2 pr-3">

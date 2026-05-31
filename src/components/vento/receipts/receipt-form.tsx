@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { type FormEvent, type KeyboardEvent, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { formatPurchaseOrderRef } from "@/lib/purchase-orders/reference";
 
@@ -16,6 +16,11 @@ type ProductPresentationOption = {
   input_unit_code: string;
   qty_in_stock_unit: number;
   is_default?: boolean | null;
+  last_net_unit_cost?: number | null;
+  avg_net_unit_cost?: number | null;
+  last_stock_unit_cost?: number | null;
+  avg_stock_unit_cost?: number | null;
+  last_received_at?: string | null;
 };
 
 type ProductRow = {
@@ -68,6 +73,40 @@ type PrefillRow = {
 
 type CostInputMode = "net" | "gross";
 
+type MasterDataRequestKind = "new_product" | "new_presentation";
+
+type MasterDataRequestDraft = {
+  kind: MasterDataRequestKind;
+  lineIndex: number;
+  requestedLabel: string;
+  inputUnitLabel: string;
+  conversionFactorToStock: string;
+  stockUnitCode: string;
+  unitCost: string;
+  notes: string;
+};
+
+type MasterDataRequestPayload = {
+  id: string;
+  kind: MasterDataRequestKind;
+  status: "pending_review";
+  source: "origo_receipt";
+  siteId: string;
+  supplierId: string;
+  supplierName: string | null;
+  lineIndex: number;
+  productId: string | null;
+  productName: string | null;
+  requestedLabel: string;
+  inputUnitCode: string;
+  inputUnitLabel: string;
+  conversionFactorToStock: number | null;
+  stockUnitCode: string;
+  unitCost: number | null;
+  notes: string | null;
+  createdAt: string;
+};
+
 type ReceiptLine = {
   productId: string;
   productSearch: string;
@@ -96,6 +135,7 @@ type StoredReceiptDraft = {
   emergencyReason?: string;
   isExceptionReceipt?: boolean;
   lines?: ReceiptLine[];
+  masterDataRequests?: MasterDataRequestPayload[];
 };
 
 type Props = {
@@ -202,6 +242,19 @@ function normalizeStoredLines(
   }));
 }
 
+function normalizeMasterDataRequests(
+  requests: MasterDataRequestPayload[] | undefined
+): MasterDataRequestPayload[] {
+  if (!Array.isArray(requests)) return [];
+  return requests.filter((request) => {
+    return (
+      request &&
+      (request.kind === "new_product" || request.kind === "new_presentation") &&
+      String(request.requestedLabel ?? "").trim().length > 0
+    );
+  });
+}
+
 function readStoredDraft(storageKey: string, defaultLocationId: string): StoredReceiptDraft | null {
   if (typeof window === "undefined") return null;
   const raw = window.sessionStorage.getItem(storageKey);
@@ -211,6 +264,7 @@ function readStoredDraft(storageKey: string, defaultLocationId: string): StoredR
     return {
       ...parsed,
       lines: normalizeStoredLines(parsed.lines, defaultLocationId) ?? undefined,
+      masterDataRequests: normalizeMasterDataRequests(parsed.masterDataRequests),
     };
   } catch {
     return null;
@@ -288,6 +342,38 @@ function getProductStockUnitCode(product: ProductRow | undefined): string {
 function getDefaultPresentation(product: ProductRow | undefined): ProductPresentationOption | null {
   const presentations = product?.presentations ?? [];
   return presentations.find((presentation) => presentation.is_default) ?? presentations[0] ?? null;
+}
+
+function getPresentationSuggestedUnitCost(
+  product: ProductRow | undefined,
+  presentation: ProductPresentationOption | null | undefined,
+  factor: number
+): number {
+  const lastCost = Number(presentation?.last_net_unit_cost ?? 0);
+  if (Number.isFinite(lastCost) && lastCost > 0) return lastCost;
+
+  const avgCost = Number(presentation?.avg_net_unit_cost ?? 0);
+  if (Number.isFinite(avgCost) && avgCost > 0) return avgCost;
+
+  const productCost = Number(product?.cost ?? 0);
+  if (Number.isFinite(productCost) && productCost > 0 && factor > 0) {
+    return productCost * factor;
+  }
+
+  return 0;
+}
+
+function formatUnitCostForInput(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "";
+  return String(Math.round(value * 100) / 100);
+}
+
+function getRequestKindLabel(kind: MasterDataRequestKind): string {
+  return kind === "new_product" ? "Nuevo insumo" : "Nueva presentación";
+}
+
+function computeRequestInputUnitCode(request: MasterDataRequestDraft): string {
+  return normalizeUnitCode(request.inputUnitLabel || request.requestedLabel) || request.stockUnitCode || "un";
 }
 
 function computeLineCost(line: ReceiptLine) {
@@ -465,6 +551,10 @@ export function ReceiptForm({
     return storedDraft?.lines?.length ? storedDraft.lines : initialRows;
   });
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [requestDraft, setRequestDraft] = useState<MasterDataRequestDraft | null>(null);
+  const [masterDataRequests, setMasterDataRequests] = useState<MasterDataRequestPayload[]>(() =>
+    normalizeMasterDataRequests(storedDraft?.masterDataRequests)
+  );
 
   const entryMode = selectedPurchaseOrderId ? "normal" : "emergency";
   const isPurchaseOrderReceipt = entryMode === "normal";
@@ -605,6 +695,7 @@ export function ReceiptForm({
       emergencyReason,
       isExceptionReceipt,
       lines,
+      masterDataRequests,
     };
     window.sessionStorage.setItem(storageKey, JSON.stringify(payload));
   }, [
@@ -612,6 +703,7 @@ export function ReceiptForm({
     invoiceNumber,
     isExceptionReceipt,
     lines,
+    masterDataRequests,
     notes,
     receivedAt,
     storageKey,
@@ -647,7 +739,7 @@ export function ReceiptForm({
       : 1;
     const inputUnitLabel = defaultPresentation?.label ?? stockUnitCode;
     const inputUnitCode = (defaultPresentation?.input_unit_code ?? normalizeUnitCode(inputUnitLabel)) || stockUnitCode;
-    const suggestedUnitCost = Number(product.cost ?? 0) > 0 ? Number(product.cost) * factor : 0;
+    const suggestedUnitCost = getPresentationSuggestedUnitCost(product, defaultPresentation, factor);
 
     updateLine(index, {
       productId: product.id,
@@ -657,7 +749,7 @@ export function ReceiptForm({
       inputUnitLabel,
       conversionFactorToStock: String(factor),
       stockUnitCode,
-      unitCost: lines[index]?.unitCost || (suggestedUnitCost > 0 ? String(Math.round(suggestedUnitCost * 100) / 100) : ""),
+      unitCost: lines[index]?.unitCost || formatUnitCostForInput(suggestedUnitCost),
     });
     setActiveProductPickerIndex(null);
   };
@@ -674,7 +766,146 @@ export function ReceiptForm({
     });
   };
 
-  const handleClientValidation = (event: React.FormEvent<HTMLFormElement>) => {
+  const openNewProductRequest = (index: number) => {
+    const line = lines[index];
+    setRequestDraft({
+      kind: "new_product",
+      lineIndex: index,
+      requestedLabel: line.productSearch.trim(),
+      inputUnitLabel: "",
+      conversionFactorToStock: "1",
+      stockUnitCode: "un",
+      unitCost: line.unitCost,
+      notes: "",
+    });
+    setActiveProductPickerIndex(null);
+  };
+
+  const openNewPresentationRequest = (index: number) => {
+    const line = lines[index];
+    const product = line.productId ? productMap.get(line.productId) : undefined;
+    const stockUnitCode = line.stockUnitCode || getProductStockUnitCode(product);
+    const currentInputUnitLabel = line.inputUnitLabel || line.inputUnitCode || "";
+
+    if (!line.productId || !product) {
+      setFieldErrors((prev) => ({
+        ...prev,
+        [`line_${index}_productId`]: "Selecciona primero el insumo al que pertenece la presentación.",
+      }));
+      return;
+    }
+
+    setRequestDraft({
+      kind: "new_presentation",
+      lineIndex: index,
+      requestedLabel: currentInputUnitLabel && currentInputUnitLabel !== stockUnitCode ? currentInputUnitLabel : "",
+      inputUnitLabel: currentInputUnitLabel && currentInputUnitLabel !== stockUnitCode ? currentInputUnitLabel : "",
+      conversionFactorToStock: line.conversionFactorToStock || "1",
+      stockUnitCode,
+      unitCost: line.unitCost,
+      notes: "",
+    });
+  };
+
+  const updateRequestDraft = (patch: Partial<MasterDataRequestDraft>) => {
+    setRequestDraft((current) => (current ? { ...current, ...patch } : current));
+  };
+
+  const saveRequestDraft = () => {
+    if (!requestDraft) return;
+
+    const requestedLabel = requestDraft.requestedLabel.trim();
+    const factor = Number(requestDraft.conversionFactorToStock || 0);
+    const line = lines[requestDraft.lineIndex];
+    const product = line?.productId ? productMap.get(line.productId) : undefined;
+
+    if (!requestedLabel) {
+      setFieldErrors((prev) => ({
+        ...prev,
+        master_data_request: "Escribe el nombre de la solicitud antes de agregarla.",
+      }));
+      return;
+    }
+
+    if (requestDraft.kind === "new_presentation") {
+      if (!line?.productId || !product) {
+        setFieldErrors((prev) => ({
+          ...prev,
+          master_data_request: "Selecciona el producto antes de solicitar una presentación.",
+        }));
+        return;
+      }
+
+      if (!Number.isFinite(factor) || factor <= 0) {
+        setFieldErrors((prev) => ({
+          ...prev,
+          master_data_request: "El factor a stock debe ser mayor a 0.",
+        }));
+        return;
+      }
+
+      updateLine(requestDraft.lineIndex, {
+        presentationId: "",
+        inputUnitLabel: requestDraft.inputUnitLabel.trim() || requestedLabel,
+        inputUnitCode: computeRequestInputUnitCode(requestDraft),
+        conversionFactorToStock: requestDraft.conversionFactorToStock,
+        stockUnitCode: requestDraft.stockUnitCode || getProductStockUnitCode(product),
+        unitCost: line.unitCost || requestDraft.unitCost,
+      });
+    }
+
+    if (requestDraft.kind === "new_product" && line) {
+      updateLine(requestDraft.lineIndex, {
+        productSearch: requestedLabel,
+      });
+    }
+
+    const payload: MasterDataRequestPayload = {
+      id: `${requestDraft.kind}:${requestDraft.lineIndex}:${Date.now()}`,
+      kind: requestDraft.kind,
+      status: "pending_review",
+      source: "origo_receipt",
+      siteId,
+      supplierId,
+      supplierName: selectedSupplier?.name ?? null,
+      lineIndex: requestDraft.lineIndex,
+      productId: requestDraft.kind === "new_presentation" ? line?.productId || null : null,
+      productName: requestDraft.kind === "new_presentation" ? product?.name ?? null : null,
+      requestedLabel,
+      inputUnitCode: computeRequestInputUnitCode(requestDraft),
+      inputUnitLabel: requestDraft.inputUnitLabel.trim() || requestedLabel,
+      conversionFactorToStock:
+        requestDraft.kind === "new_presentation" && Number.isFinite(factor) && factor > 0 ? factor : null,
+      stockUnitCode: requestDraft.stockUnitCode || getProductStockUnitCode(product),
+      unitCost: Number(requestDraft.unitCost || 0) > 0 ? Number(requestDraft.unitCost) : null,
+      notes: requestDraft.notes.trim() || null,
+      createdAt: new Date().toISOString(),
+    };
+
+    setMasterDataRequests((prev) => [...prev, payload]);
+    setFieldErrors((prev) => {
+      const next = { ...prev };
+      delete next.master_data_request;
+      return next;
+    });
+    setRequestDraft(null);
+  };
+
+  const removeMasterDataRequest = (requestId: string) => {
+    setMasterDataRequests((prev) => prev.filter((request) => request.id !== requestId));
+  };
+
+  const handleFormKeyDown = (event: KeyboardEvent<HTMLFormElement>) => {
+    if (event.key !== "Enter") return;
+
+    const target = event.target as HTMLElement | null;
+    const tagName = target?.tagName.toLowerCase();
+    if (tagName === "textarea" || tagName === "button") return;
+
+    event.preventDefault();
+  };
+
+  const handleClientValidation = (event: FormEvent<HTMLFormElement>) => {
     const nextErrors: Record<string, string> = {};
     if (!supplierId) nextErrors["supplier_id"] = "Selecciona un proveedor.";
     if (isDirectReceipt && isExceptionReceipt && !emergencyReason.trim()) {
@@ -729,12 +960,25 @@ export function ReceiptForm({
   };
 
   return (
-    <form action={action} className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_360px]" onSubmit={handleClientValidation}>
+    <form
+      action={action}
+      className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_360px]"
+      onKeyDown={handleFormKeyDown}
+      onSubmit={handleClientValidation}
+    >
       <input type="hidden" name="site_id" value={siteId} />
       <input type="hidden" name="supplier_id" value={supplierId} />
       <input type="hidden" name="purchase_order_id" value={selectedPurchaseOrderId} />
       <input type="hidden" name="entry_mode" value={entryMode} />
       <input type="hidden" name="emergency_reason" value={effectiveEmergencyReason} />
+      {masterDataRequests.map((request) => (
+        <input
+          key={request.id}
+          type="hidden"
+          name="master_data_request_payload"
+          value={JSON.stringify(request)}
+        />
+      ))}
 
       <div className="space-y-5">
         <section className="rounded-[1.75rem] border border-[var(--ui-border)] bg-white p-5 shadow-sm">
@@ -908,8 +1152,7 @@ export function ReceiptForm({
             <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
               <div className="font-semibold">Catálogo proveedor-producto pendiente de conectar</div>
               <p className="mt-1">
-                Esta versión mejora la experiencia visual y elimina el selector negro. En el siguiente paso conectamos
-                `product_suppliers` y `procurement_supplier_product_costs` desde la página para filtrar por proveedor.
+                El catálogo aún no trae asociaciones proveedor-producto suficientes. La recepción permite buscar en el catálogo disponible y deja la solicitud pendiente cuando falta maestro de datos.
               </p>
             </div>
           ) : null}
@@ -1035,24 +1278,30 @@ export function ReceiptForm({
 
                               {!visibleProductOptionsByLine[index]?.length ? (
                                 <div className="rounded-2xl border border-dashed border-[var(--ui-border)] p-4 text-sm text-[var(--ui-muted)]">
-                                  No encontramos ese insumo. En el siguiente paso conectamos creación rápida de insumo y presentación.
+                                  No encontramos ese insumo. Puedes solicitarlo para revisión de maestro de datos.
                                 </div>
                               ) : null}
 
                               <div className="grid gap-2 pt-2 sm:grid-cols-2">
                                 <button
                                   type="button"
-                                  className="rounded-2xl border border-dashed border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-3 py-2 text-left text-xs font-semibold text-[var(--ui-muted)]"
-                                  onClick={() => setActiveProductPickerIndex(null)}
+                                  className="rounded-2xl border border-dashed border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-3 py-2 text-left text-xs font-semibold text-[var(--ui-text)] transition hover:border-[var(--ui-brand)] hover:bg-[var(--ui-brand)]/5"
+                                  onClick={() => openNewProductRequest(index)}
                                 >
-                                  Crear nuevo insumo · siguiente paso
+                                  Solicitar nuevo insumo
+                                  <span className="mt-1 block font-normal text-[var(--ui-muted)]">
+                                    Lo revisa maestro de datos antes de quedar en catálogo.
+                                  </span>
                                 </button>
                                 <button
                                   type="button"
                                   className="rounded-2xl border border-dashed border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-3 py-2 text-left text-xs font-semibold text-[var(--ui-muted)]"
                                   onClick={() => setActiveProductPickerIndex(null)}
                                 >
-                                  Asociar proveedor secundario · siguiente paso
+                                  Cerrar buscador
+                                  <span className="mt-1 block font-normal text-[var(--ui-muted)]">
+                                    Para presentaciones, selecciona primero un insumo.
+                                  </span>
                                 </button>
                               </div>
                             </div>
@@ -1088,11 +1337,15 @@ export function ReceiptForm({
                                   return;
                                 }
 
+                                const presentationFactor = Number(presentation.qty_in_stock_unit || 1);
+                                const suggestedUnitCost = getPresentationSuggestedUnitCost(product, presentation, presentationFactor);
+
                                 updateLine(index, {
                                   presentationId: presentation.id,
                                   inputUnitCode: presentation.input_unit_code,
                                   inputUnitLabel: presentation.label,
-                                  conversionFactorToStock: String(presentation.qty_in_stock_unit || 1),
+                                  conversionFactorToStock: String(presentationFactor || 1),
+                                  unitCost: line.unitCost || formatUnitCostForInput(suggestedUnitCost),
                                 });
                               }}
                             >
@@ -1155,6 +1408,20 @@ export function ReceiptForm({
                             </div>
                           </div>
                         </div>
+
+                        {!isPurchaseOrderReceipt ? (
+                          <button
+                            type="button"
+                            className="w-full rounded-2xl border border-dashed border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-3 py-2 text-left text-xs font-semibold text-[var(--ui-text)] transition hover:border-[var(--ui-brand)] hover:bg-[var(--ui-brand)]/5 disabled:cursor-not-allowed disabled:opacity-50"
+                            onClick={() => openNewPresentationRequest(index)}
+                            disabled={!line.productId}
+                          >
+                            Solicitar nueva presentación
+                            <span className="mt-1 block font-normal text-[var(--ui-muted)]">
+                              Ej: el producto era botella 1 L, pero llegó botella 2 L.
+                            </span>
+                          </button>
+                        ) : null}
                       </div>
 
                       <input type="hidden" name="item_presentation_id" value={line.presentationId} />
@@ -1247,6 +1514,119 @@ export function ReceiptForm({
                       <input type="hidden" name="item_tax_amount" value={String(cost.taxAmount)} />
                     </div>
                   </div>
+
+                  {requestDraft?.lineIndex === index ? (
+                    <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <div className="font-bold">Solicitud de maestro de datos</div>
+                          <p className="mt-1 text-xs leading-5">
+                            {requestDraft.kind === "new_product"
+                              ? "Solicita un insumo nuevo para revisión. No se crea directo en catálogo desde recepción."
+                              : "Solicita una presentación nueva para el producto seleccionado. No se aprueba directo desde bodega."}
+                          </p>
+                        </div>
+                        <span className="rounded-full border border-amber-200 bg-white px-2 py-1 text-[11px] font-semibold">
+                          {getRequestKindLabel(requestDraft.kind)}
+                        </span>
+                      </div>
+
+                      {requestDraft.kind === "new_presentation" && product ? (
+                        <div className="mt-3 rounded-2xl border border-amber-200 bg-white px-3 py-2 text-xs">
+                          Producto: <span className="font-semibold">{formatProductOptionLabel(product)}</span> · Unidad stock: {stockUnitCode}
+                        </div>
+                      ) : null}
+
+                      <div className="mt-3 grid gap-3 md:grid-cols-2">
+                        <label className="flex flex-col gap-1">
+                          <span className="ui-label">
+                            {requestDraft.kind === "new_product" ? "Nombre propuesto del insumo" : "Nombre de la presentación"}
+                          </span>
+                          <input
+                            className="ui-input bg-white"
+                            placeholder={requestDraft.kind === "new_product" ? "Ej: Vinagre de arroz" : "Ej: Botella 2 L"}
+                            value={requestDraft.requestedLabel}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              updateRequestDraft({
+                                requestedLabel: value,
+                                inputUnitLabel: requestDraft.kind === "new_presentation" ? value : requestDraft.inputUnitLabel,
+                              });
+                            }}
+                          />
+                        </label>
+
+                        {requestDraft.kind === "new_product" ? (
+                          <label className="flex flex-col gap-1">
+                            <span className="ui-label">Unidad stock propuesta</span>
+                            <input
+                              className="ui-input bg-white"
+                              placeholder="Ej: un, g, kg, ml, l"
+                              value={requestDraft.stockUnitCode}
+                              onChange={(e) => updateRequestDraft({ stockUnitCode: normalizeUnitCode(e.target.value) || e.target.value })}
+                            />
+                          </label>
+                        ) : (
+                          <>
+                            <label className="flex flex-col gap-1">
+                              <span className="ui-label">Unidad de entrada</span>
+                              <input
+                                className="ui-input bg-white"
+                                placeholder="Ej: botella, bolsa, caja"
+                                value={requestDraft.inputUnitLabel}
+                                onChange={(e) => updateRequestDraft({ inputUnitLabel: e.target.value })}
+                              />
+                            </label>
+                            <label className="flex flex-col gap-1">
+                              <span className="ui-label">Factor a stock</span>
+                              <input
+                                className="ui-input bg-white"
+                                type="number"
+                                step="0.000001"
+                                min="0.000001"
+                                value={requestDraft.conversionFactorToStock}
+                                onChange={(e) => updateRequestDraft({ conversionFactorToStock: e.target.value })}
+                              />
+                            </label>
+                            <label className="flex flex-col gap-1">
+                              <span className="ui-label">Costo neto sugerido</span>
+                              <input
+                                className="ui-input bg-white"
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                value={requestDraft.unitCost}
+                                onChange={(e) => updateRequestDraft({ unitCost: e.target.value })}
+                              />
+                            </label>
+                          </>
+                        )}
+
+                        <label className="flex flex-col gap-1 md:col-span-2">
+                          <span className="ui-label">Notas para revisión</span>
+                          <textarea
+                            className="ui-input min-h-20 bg-white"
+                            placeholder="Ej: proveedor envió presentación diferente a la habitual."
+                            value={requestDraft.notes}
+                            onChange={(e) => updateRequestDraft({ notes: e.target.value })}
+                          />
+                        </label>
+                      </div>
+
+                      {fieldErrors.master_data_request ? (
+                        <p className="mt-2 text-xs text-rose-700">{fieldErrors.master_data_request}</p>
+                      ) : null}
+
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button type="button" className="ui-btn ui-btn--brand ui-btn--sm" onClick={saveRequestDraft}>
+                          Agregar solicitud pendiente
+                        </button>
+                        <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={() => setRequestDraft(null)}>
+                          Cancelar
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
 
                   <div className="mt-4 grid gap-3 lg:grid-cols-4">
                     <label>
@@ -1391,6 +1771,33 @@ export function ReceiptForm({
               El costo promedio operativo se calcula con el valor neto. El bruto queda disponible para trazabilidad de factura.
             </div>
 
+            {masterDataRequests.length > 0 ? (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950">
+                <div className="font-bold">Solicitudes para revisión</div>
+                <div className="mt-2 space-y-2">
+                  {masterDataRequests.map((request) => (
+                    <div key={request.id} className="rounded-xl border border-amber-200 bg-white p-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="font-semibold">{getRequestKindLabel(request.kind)}</div>
+                          <div className="mt-1 text-[var(--ui-muted)]">
+                            {request.productName ? `${request.productName} · ` : ""}{request.requestedLabel}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="text-[11px] font-semibold text-rose-700"
+                          onClick={() => removeMasterDataRequest(request.id)}
+                        >
+                          Quitar
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
             {serverErrorMessage ? (
               <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
                 {serverErrorMessage}
@@ -1412,6 +1819,8 @@ export function ReceiptForm({
                 setReceivedAt("");
                 setEmergencyReason("");
                 setIsExceptionReceipt(false);
+                setMasterDataRequests([]);
+                setRequestDraft(null);
               }}
             >
               Limpiar borrador
