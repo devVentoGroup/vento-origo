@@ -9,6 +9,15 @@ type SupplierRow = {
   name: string | null;
 };
 
+type ProductPresentationOption = {
+  id: string;
+  product_id: string;
+  label: string;
+  input_unit_code: string;
+  qty_in_stock_unit: number;
+  is_default?: boolean | null;
+};
+
 type ProductRow = {
   id: string;
   name: string | null;
@@ -17,6 +26,8 @@ type ProductRow = {
   cost: number | null;
   lot_tracking: boolean;
   expiry_tracking: boolean;
+  supplier_ids?: string[] | null;
+  presentations?: ProductPresentationOption[] | null;
 };
 
 type LocationRow = {
@@ -55,6 +66,8 @@ type PrefillRow = {
   stockUnitCode: string;
 };
 
+type CostInputMode = "net" | "gross";
+
 type ReceiptLine = {
   productId: string;
   productSearch: string;
@@ -62,6 +75,8 @@ type ReceiptLine = {
   positionId: string;
   quantity: string;
   unitCost: string;
+  costInputMode: CostInputMode;
+  taxRate: string;
   lotNumber: string;
   expiryDate: string;
   notes: string;
@@ -79,6 +94,7 @@ type StoredReceiptDraft = {
   notes?: string;
   receivedAt?: string;
   emergencyReason?: string;
+  isExceptionReceipt?: boolean;
   lines?: ReceiptLine[];
 };
 
@@ -99,31 +115,45 @@ type Props = {
   submitSuccess?: boolean;
 };
 
+const DIRECT_RECEIPT_REASON = "Recepción directa sin orden de compra.";
+
+const RECEIPT_LOCATION_LABELS_BY_CODE: Record<string, string> = {
+  "LOC-CP-BOD-MAIN": "Bodega principal",
+  "LOC-CP-N3P-MAIN": "Nevera 3 puertas",
+  "LOC-CP-FRIO-MAIN": "Cuarto de enfriamiento",
+  "LOC-CP-CONG-MAIN": "Cuarto de congelación",
+  "LOC-CP-PROD-COC-01": "Operación · Cocina caliente",
+  "LOC-CP-PROD-PAN-01": "Operación · Galletería y panadería",
+  "LOC-CP-PROD-REP-01": "Operación · Repostería",
+};
+
+function makeEmptyLine(defaultLocationId: string): ReceiptLine {
+  return {
+    productId: "",
+    productSearch: "",
+    locationId: defaultLocationId,
+    positionId: "",
+    quantity: "",
+    unitCost: "",
+    costInputMode: "net",
+    taxRate: "0",
+    lotNumber: "",
+    expiryDate: "",
+    notes: "",
+    purchaseOrderItemId: "",
+    presentationId: "",
+    inputUnitCode: "",
+    inputUnitLabel: "",
+    conversionFactorToStock: "1",
+    stockUnitCode: "",
+  };
+}
+
 function buildInitialRows(params: {
   prefillRows: PrefillRow[];
   defaultLocationId: string;
 }): ReceiptLine[] {
-  if (!params.prefillRows.length) {
-    return [
-      {
-        productId: "",
-        productSearch: "",
-        locationId: params.defaultLocationId,
-        positionId: "",
-        quantity: "",
-        unitCost: "",
-        lotNumber: "",
-        expiryDate: "",
-        notes: "",
-        purchaseOrderItemId: "",
-        presentationId: "",
-        inputUnitCode: "",
-        inputUnitLabel: "",
-        conversionFactorToStock: "1",
-        stockUnitCode: "",
-      },
-    ];
-  }
+  if (!params.prefillRows.length) return [makeEmptyLine(params.defaultLocationId)];
 
   return params.prefillRows.map((row) => ({
     productId: row.productId,
@@ -132,6 +162,8 @@ function buildInitialRows(params: {
     positionId: "",
     quantity: String(row.quantity),
     unitCost: row.unitCost > 0 ? String(row.unitCost) : "",
+    costInputMode: "net",
+    taxRate: "0",
     lotNumber: "",
     expiryDate: "",
     notes: "",
@@ -144,15 +176,20 @@ function buildInitialRows(params: {
   }));
 }
 
-function normalizeStoredLines(lines: ReceiptLine[] | undefined, defaultLocationId: string) {
+function normalizeStoredLines(
+  lines: ReceiptLine[] | undefined,
+  defaultLocationId: string
+): ReceiptLine[] | null {
   if (!Array.isArray(lines) || !lines.length) return null;
-  return lines.map((line) => ({
+  return lines.map((line): ReceiptLine => ({
     productId: line.productId ?? "",
     productSearch: line.productSearch ?? "",
     locationId: line.locationId ?? defaultLocationId,
     positionId: line.positionId ?? "",
     quantity: line.quantity ?? "",
     unitCost: line.unitCost ?? "",
+    costInputMode: (line.costInputMode === "gross" ? "gross" : "net") as CostInputMode,
+    taxRate: line.taxRate ?? "0",
     lotNumber: line.lotNumber ?? "",
     expiryDate: line.expiryDate ?? "",
     notes: line.notes ?? "",
@@ -179,15 +216,15 @@ function readStoredDraft(storageKey: string, defaultLocationId: string): StoredR
     return null;
   }
 }
-const RECEIPT_LOCATION_LABELS_BY_CODE: Record<string, string> = {
-  "LOC-CP-BOD-MAIN": "Bodega principal",
-  "LOC-CP-N3P-MAIN": "Nevera 3 puertas",
-  "LOC-CP-FRIO-MAIN": "Cuarto de enfriamiento",
-  "LOC-CP-CONG-MAIN": "Cuarto de congelación",
-  "LOC-CP-PROD-COC-01": "Operación · Cocina caliente",
-  "LOC-CP-PROD-PAN-01": "Operación · Galletería y panadería",
-  "LOC-CP-PROD-REP-01": "Operación · Repostería",
-};
+
+function asNumber(value: string | number | null | undefined): number {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function clampNonNegative(value: number): number {
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
 
 function formatReceiptLocationLabel(location: LocationRow) {
   const code = String(location.code ?? "").trim();
@@ -201,14 +238,6 @@ function formatReceiptLocationLabel(location: LocationRow) {
   if (code) return code;
 
   return location.id;
-}
-function formatLocationPositionLabel(position: LocationPositionRow) {
-  const name = String(position.name || position.code || position.id).trim();
-  const kind = String(position.kind || "").trim();
-
-  if (!kind) return name;
-
-  return `${name} · ${kind}`;
 }
 
 function formatProductOptionLabel(product: ProductRow) {
@@ -224,6 +253,17 @@ function normalizeProductSearch(value: string) {
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .trim();
+}
+
+function normalizeUnitCode(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 32);
 }
 
 function formatQty(value: number): string {
@@ -243,6 +283,74 @@ function formatAmount(value: number): string {
 
 function getProductStockUnitCode(product: ProductRow | undefined): string {
   return String(product?.stock_unit_code ?? product?.unit ?? "un").trim().toLowerCase() || "un";
+}
+
+function getDefaultPresentation(product: ProductRow | undefined): ProductPresentationOption | null {
+  const presentations = product?.presentations ?? [];
+  return presentations.find((presentation) => presentation.is_default) ?? presentations[0] ?? null;
+}
+
+function computeLineCost(line: ReceiptLine) {
+  const inputQty = clampNonNegative(asNumber(line.quantity));
+  const inputUnitCost = clampNonNegative(asNumber(line.unitCost));
+  const taxRate = clampNonNegative(asNumber(line.taxRate));
+  const conversionFactorToStock = clampNonNegative(asNumber(line.conversionFactorToStock)) || 1;
+
+  const netUnitCost =
+    line.costInputMode === "gross" && taxRate > 0
+      ? inputUnitCost / (1 + taxRate / 100)
+      : inputUnitCost;
+
+  const grossUnitCost =
+    line.costInputMode === "gross"
+      ? inputUnitCost
+      : inputUnitCost * (1 + taxRate / 100);
+
+  const stockQty = inputQty * conversionFactorToStock;
+  const stockUnitCost = conversionFactorToStock > 0 ? netUnitCost / conversionFactorToStock : 0;
+  const netTotal = netUnitCost * inputQty;
+  const grossTotal = grossUnitCost * inputQty;
+  const taxAmount = grossTotal - netTotal;
+
+  return {
+    inputQty,
+    inputUnitCost,
+    taxRate,
+    conversionFactorToStock,
+    stockQty,
+    netUnitCost,
+    grossUnitCost,
+    stockUnitCost,
+    netTotal,
+    grossTotal,
+    taxAmount,
+    taxIncluded: line.costInputMode === "gross",
+  };
+}
+
+function positionBaseLabel(position: LocationPositionRow) {
+  const name = String(position.name || position.code || position.id).trim();
+  const code = String(position.code || "").trim();
+  if (!code || code === name) return name;
+  return `${name} (${code})`;
+}
+
+function buildPositionPath(position: LocationPositionRow, positionById: Map<string, LocationPositionRow>) {
+  const chain: string[] = [];
+  const visited = new Set<string>();
+  let current: LocationPositionRow | undefined = position;
+
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    chain.unshift(positionBaseLabel(current));
+    current = current.parent_position_id ? positionById.get(current.parent_position_id) : undefined;
+  }
+
+  return chain.join(" > ");
+}
+
+function shortProductName(product: ProductRow | undefined) {
+  return String(product?.name ?? "Producto").trim();
 }
 
 export function ReceiptForm({
@@ -265,7 +373,7 @@ export function ReceiptForm({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const defaultLocationId = locations[0]?.id ?? "";
-  const receiptDraftScope = selectedPurchaseOrderId ? `po:${selectedPurchaseOrderId}` : "emergency";
+  const receiptDraftScope = selectedPurchaseOrderId ? `po:${selectedPurchaseOrderId}` : "direct";
   const storageKey = `origo:receipts:form:${siteId}:${receiptDraftScope}`;
   const legacyStorageKey = `origo:receipts:form:${siteId}`;
   const storedDraft = readStoredDraft(storageKey, defaultLocationId);
@@ -274,7 +382,9 @@ export function ReceiptForm({
   const [invoiceNumber, setInvoiceNumber] = useState(storedDraft?.invoiceNumber ?? prefillInvoiceNumber);
   const [notes, setNotes] = useState(storedDraft?.notes ?? prefillNotes);
   const [receivedAt, setReceivedAt] = useState(storedDraft?.receivedAt ?? "");
+  const [isExceptionReceipt, setIsExceptionReceipt] = useState(Boolean(storedDraft?.isExceptionReceipt));
   const [emergencyReason, setEmergencyReason] = useState(storedDraft?.emergencyReason ?? "");
+  const [activeProductPickerIndex, setActiveProductPickerIndex] = useState<number | null>(null);
   const [lines, setLines] = useState<ReceiptLine[]>(() => {
     const initialRows = buildInitialRows({ prefillRows, defaultLocationId });
     const storedLinesAreUsable =
@@ -290,14 +400,21 @@ export function ReceiptForm({
     return storedLinesAreUsable ? storedDraft?.lines ?? initialRows : initialRows;
   });
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
   const entryMode = selectedPurchaseOrderId ? "normal" : "emergency";
   const isPurchaseOrderReceipt = entryMode === "normal";
+  const isDirectReceipt = !isPurchaseOrderReceipt;
+  const selectedSupplier = suppliers.find((supplier) => supplier.id === supplierId) ?? null;
+  const effectiveEmergencyReason =
+    isDirectReceipt && !isExceptionReceipt
+      ? DIRECT_RECEIPT_REASON
+      : emergencyReason.trim();
 
   const poOptions = useMemo(
     () =>
       purchaseOrders.map((po) => ({
         value: po.id,
-        label: `${formatPurchaseOrderRef({ id: po.id, createdAt: po.created_at })} - ${po.suppliers?.name ?? "Proveedor"} - ${po.status ?? "-"}`,
+        label: `${formatPurchaseOrderRef({ id: po.id, createdAt: po.created_at })} · ${po.suppliers?.name ?? "Proveedor"} · ${po.status ?? "-"}`,
       })),
     [purchaseOrders]
   );
@@ -309,56 +426,33 @@ export function ReceiptForm({
     return map;
   }, [products]);
 
-  const productOptions = useMemo(
-    () =>
-      products.map((product) => {
-        const label = formatProductOptionLabel(product);
-
-        return {
-          id: product.id,
-          label,
-          searchKey: normalizeProductSearch(label),
-        };
-      }),
+  const productsHaveSupplierLinks = useMemo(
+    () => products.some((product) => Array.isArray(product.supplier_ids) && product.supplier_ids.length > 0),
     [products]
   );
 
-  const productIdByLabel = useMemo(() => {
-    const map = new Map<string, string>();
-
-    for (const option of productOptions) {
-      map.set(option.label, option.id);
-    }
-
-    return map;
-  }, [productOptions]);
+  const supplierScopedProducts = useMemo(() => {
+    if (!supplierId || !productsHaveSupplierLinks) return products;
+    return products.filter((product) => Array.isArray(product.supplier_ids) && product.supplier_ids.includes(supplierId));
+  }, [products, productsHaveSupplierLinks, supplierId]);
 
   const productLabelById = useMemo(() => {
     const map = new Map<string, string>();
-
-    for (const option of productOptions) {
-      map.set(option.id, option.label);
-    }
-
+    for (const product of products) map.set(product.id, formatProductOptionLabel(product));
     return map;
-  }, [productOptions]);
+  }, [products]);
 
-  const getProductSuggestions = (search: string) => {
-    const normalizedSearch = normalizeProductSearch(search);
+  const positionById = useMemo(() => {
+    return new Map(locationPositions.map((position) => [position.id, position]));
+  }, [locationPositions]);
 
-    if (!normalizedSearch) return productOptions.slice(0, 60);
-
-    return productOptions
-      .filter((product) => product.searchKey.includes(normalizedSearch))
-      .slice(0, 60);
-  };
-
-  const getLineProductInputValue = (line: ReceiptLine) => {
-    if (line.productSearch) return line.productSearch;
-    if (!line.productId) return "";
-
-    return productLabelById.get(line.productId) ?? line.productId;
-  };
+  const positionLabelById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const position of locationPositions) {
+      map.set(position.id, buildPositionPath(position, positionById));
+    }
+    return map;
+  }, [locationPositions, positionById]);
 
   const positionsByLocationId = useMemo(() => {
     const map = new Map<string, LocationPositionRow[]>();
@@ -371,20 +465,60 @@ export function ReceiptForm({
 
     for (const rows of map.values()) {
       rows.sort((a, b) => {
+        const aPath = positionLabelById.get(a.id) ?? positionBaseLabel(a);
+        const bPath = positionLabelById.get(b.id) ?? positionBaseLabel(b);
+
         const aOrder = typeof a.sort_order === "number" ? a.sort_order : Number.MAX_SAFE_INTEGER;
         const bOrder = typeof b.sort_order === "number" ? b.sort_order : Number.MAX_SAFE_INTEGER;
+        if (a.parent_position_id === b.parent_position_id && aOrder !== bOrder) return aOrder - bOrder;
 
-        if (aOrder !== bOrder) return aOrder - bOrder;
-
-        return formatLocationPositionLabel(a).localeCompare(formatLocationPositionLabel(b), "es", {
-          numeric: true,
-          sensitivity: "base",
-        });
+        return aPath.localeCompare(bPath, "es", { numeric: true, sensitivity: "base" });
       });
     }
 
     return map;
-  }, [locationPositions]);
+  }, [locationPositions, positionLabelById]);
+
+  const visibleProductOptionsByLine = useMemo(() => {
+    return lines.map((line) => {
+      const query = normalizeProductSearch(line.productSearch);
+      const base = supplierScopedProducts.length ? supplierScopedProducts : products;
+
+      if (!query) return base.slice(0, 12);
+
+      return base
+        .filter((product) => {
+          const label = formatProductOptionLabel(product);
+          return normalizeProductSearch(label).includes(query);
+        })
+        .slice(0, 12);
+    });
+  }, [lines, products, supplierScopedProducts]);
+
+  const receiptTotals = useMemo(() => {
+    return lines.reduce(
+      (acc, line) => {
+        if (!line.productId) return acc;
+        const cost = computeLineCost(line);
+        if (cost.inputQty <= 0) return acc;
+
+        acc.validLines += 1;
+        acc.netTotal += cost.netTotal;
+        acc.grossTotal += cost.grossTotal;
+        acc.taxAmount += cost.taxAmount;
+        acc.stockQty += cost.stockQty;
+
+        return acc;
+      },
+      {
+        validLines: 0,
+        netTotal: 0,
+        grossTotal: 0,
+        taxAmount: 0,
+        stockQty: 0,
+      }
+    );
+  }, [lines]);
 
   useEffect(() => {
     window.sessionStorage.removeItem(legacyStorageKey);
@@ -404,36 +538,28 @@ export function ReceiptForm({
       notes,
       receivedAt,
       emergencyReason,
+      isExceptionReceipt,
       lines,
     };
     window.sessionStorage.setItem(storageKey, JSON.stringify(payload));
-  }, [emergencyReason, invoiceNumber, lines, notes, receivedAt, storageKey, supplierId]);
+  }, [
+    emergencyReason,
+    invoiceNumber,
+    isExceptionReceipt,
+    lines,
+    notes,
+    receivedAt,
+    storageKey,
+    supplierId,
+  ]);
 
   const addLine = () => {
-    setLines((prev) => [
-      ...prev,
-      {
-        productId: "",
-        productSearch: "",
-        locationId: defaultLocationId,
-        positionId: "",
-        quantity: "",
-        unitCost: "",
-        lotNumber: "",
-        expiryDate: "",
-        notes: "",
-        purchaseOrderItemId: "",
-        presentationId: "",
-        inputUnitCode: "",
-        inputUnitLabel: "",
-        conversionFactorToStock: "1",
-        stockUnitCode: "",
-      },
-    ]);
+    setLines((prev) => [...prev, makeEmptyLine(defaultLocationId)]);
   };
 
   const removeLine = (index: number) => {
     setLines((prev) => prev.filter((_, i) => i !== index));
+    setActiveProductPickerIndex((current) => (current === index ? null : current));
   };
 
   const updateLine = (index: number, patch: Partial<ReceiptLine>) => {
@@ -448,18 +574,53 @@ export function ReceiptForm({
     router.push(qs ? `${pathname}?${qs}` : pathname);
   };
 
+  const selectProduct = (index: number, product: ProductRow) => {
+    const stockUnitCode = getProductStockUnitCode(product);
+    const defaultPresentation = getDefaultPresentation(product);
+    const factor = Number(defaultPresentation?.qty_in_stock_unit ?? 0) > 0
+      ? Number(defaultPresentation?.qty_in_stock_unit)
+      : 1;
+    const inputUnitLabel = defaultPresentation?.label ?? stockUnitCode;
+    const inputUnitCode = (defaultPresentation?.input_unit_code ?? normalizeUnitCode(inputUnitLabel)) || stockUnitCode;
+    const suggestedUnitCost = Number(product.cost ?? 0) > 0 ? Number(product.cost) * factor : 0;
+
+    updateLine(index, {
+      productId: product.id,
+      productSearch: formatProductOptionLabel(product),
+      presentationId: defaultPresentation?.id ?? "",
+      inputUnitCode,
+      inputUnitLabel,
+      conversionFactorToStock: String(factor),
+      stockUnitCode,
+      unitCost: lines[index]?.unitCost || (suggestedUnitCost > 0 ? String(Math.round(suggestedUnitCost * 100) / 100) : ""),
+    });
+    setActiveProductPickerIndex(null);
+  };
+
+  const updateManualPresentation = (index: number, inputUnitLabel: string) => {
+    const line = lines[index];
+    const product = line.productId ? productMap.get(line.productId) : undefined;
+    const stockUnitCode = line.stockUnitCode || getProductStockUnitCode(product);
+
+    updateLine(index, {
+      inputUnitLabel,
+      inputUnitCode: normalizeUnitCode(inputUnitLabel) || stockUnitCode,
+      presentationId: "",
+    });
+  };
+
   const handleClientValidation = (event: React.FormEvent<HTMLFormElement>) => {
     const nextErrors: Record<string, string> = {};
     if (!supplierId) nextErrors["supplier_id"] = "Selecciona un proveedor.";
-    if (entryMode === "emergency" && !emergencyReason.trim()) {
-      nextErrors["emergency_reason"] = "Escribe el motivo de la recepción de emergencia.";
+    if (isDirectReceipt && isExceptionReceipt && !emergencyReason.trim()) {
+      nextErrors["emergency_reason"] = "Escribe el motivo de la excepción.";
     }
 
     const hasAtLeastOneValidLine = lines.some((line) => {
       const qty = Number(line.quantity || 0);
       const factor = Number(line.conversionFactorToStock || 0);
       const hasPresentationSnapshot =
-        entryMode === "emergency" ||
+        isDirectReceipt ||
         (Boolean(line.purchaseOrderItemId) && Boolean(line.inputUnitLabel) && factor > 0);
 
       return Boolean(line.productId) && hasPresentationSnapshot && Number.isFinite(qty) && qty > 0;
@@ -470,24 +631,21 @@ export function ReceiptForm({
 
     lines.forEach((line, index) => {
       const qty = Number(line.quantity || 0);
+      const factor = Number(line.conversionFactorToStock || 0);
       const hasQty = Number.isFinite(qty) && qty > 0;
       const hasProduct = Boolean(line.productId);
       const shouldValidateLine = hasQty || hasProduct;
       if (!shouldValidateLine) return;
 
       if (!hasProduct) nextErrors[`line_${index}_productId`] = "Selecciona producto.";
-      if (!hasQty) nextErrors[`line_${index}_quantity`] = "Ingresa cantidad valida.";
+      if (!hasQty) nextErrors[`line_${index}_quantity`] = "Ingresa cantidad válida.";
       if (!line.locationId) nextErrors[`line_${index}_locationId`] = "Selecciona LOC.";
-
-      if (entryMode === "normal" && !line.purchaseOrderItemId) {
-        nextErrors[`line_${index}_presentation`] = "La línea no pertenece a la orden de compra seleccionada.";
+      if (!line.inputUnitLabel.trim() || !Number.isFinite(factor) || factor <= 0) {
+        nextErrors[`line_${index}_presentation`] = "Define una presentación válida.";
       }
 
-      if (
-        entryMode === "normal" &&
-        (!line.inputUnitLabel.trim() || Number(line.conversionFactorToStock || 0) <= 0)
-      ) {
-        nextErrors[`line_${index}_presentation`] = "La línea no tiene presentación válida desde la OC.";
+      if (isPurchaseOrderReceipt && !line.purchaseOrderItemId) {
+        nextErrors[`line_${index}_presentation`] = "La línea no pertenece a la orden de compra seleccionada.";
       }
 
       const product = line.productId ? productMap.get(line.productId) : null;
@@ -506,430 +664,692 @@ export function ReceiptForm({
   };
 
   return (
-    <form action={action} className="ui-panel space-y-4" onSubmit={handleClientValidation}>
+    <form action={action} className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]" onSubmit={handleClientValidation}>
       <input type="hidden" name="site_id" value={siteId} />
       <input type="hidden" name="purchase_order_id" value={selectedPurchaseOrderId} />
       <input type="hidden" name="entry_mode" value={entryMode} />
-      <input type="hidden" name="emergency_reason" value={emergencyReason} />
+      <input type="hidden" name="emergency_reason" value={effectiveEmergencyReason} />
 
-      <div className="grid gap-3 md:grid-cols-4">
-        {hasPurchaseOrderOptions ? (
-          <label className="flex flex-col gap-1 md:col-span-2">
-            <span className="ui-label">Orden de compra</span>
-            <select
-              className="ui-input"
-              value={selectedPurchaseOrderId}
-              onChange={(e) => onPurchaseOrderChange(e.target.value)}
-            >
-              <option value="">Emergencia / sin orden de compra</option>
-              {poOptions.map((po) => (
-                <option key={po.value} value={po.value}>
-                  {po.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : (
-          <div className="md:col-span-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-            <div className="font-semibold">Emergencia / sin orden de compra</div>
-            <p className="mt-1">
-              No hay órdenes de compra activas para esta sede. Esta recepción se registrará como emergencia.
-            </p>
+      <div className="space-y-5">
+        <section className="rounded-[1.75rem] border border-[var(--ui-border)] bg-white p-5 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <div className="ui-caption">Tipo de recepción</div>
+              <h2 className="mt-1 text-xl font-bold text-[var(--ui-text)]">
+                {isPurchaseOrderReceipt ? "Recepción con orden de compra" : "Recepción directa"}
+              </h2>
+              <p className="mt-1 max-w-3xl text-sm leading-6 text-[var(--ui-muted)]">
+                {isPurchaseOrderReceipt
+                  ? "Carga los insumos pendientes de la OC, confirma cantidades reales y envía cada línea a su LOC y ubicación interna."
+                  : "Recibe compras sin OC sin tratarlas como error operativo. Selecciona proveedor, insumos, presentación, costo e inventario destino."}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <span className={isPurchaseOrderReceipt ? "ui-chip ui-chip--success" : "ui-chip ui-chip--info"}>
+                {isPurchaseOrderReceipt ? "Con OC" : "Sin OC"}
+              </span>
+              {isDirectReceipt && isExceptionReceipt ? (
+                <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800">
+                  Excepción
+                </span>
+              ) : null}
+            </div>
           </div>
-        )}
 
-        <label className="flex flex-col gap-1">
-          <span className="ui-label">Proveedor</span>
-          <select
-            name="supplier_id"
-            className="ui-input"
-            value={supplierId}
-            onChange={(e) => setSupplierId(e.target.value)}
-            required
-          >
-            <option value="">Seleccionar</option>
-            {suppliers.map((supplier) => (
-              <option key={supplier.id} value={supplier.id}>
-                {supplier.name ?? supplier.id}
-              </option>
-            ))}
-          </select>
-          {fieldErrors["supplier_id"] ? (
-            <span className="text-xs text-rose-600">{fieldErrors["supplier_id"]}</span>
-          ) : null}
-        </label>
-
-        <label className="flex flex-col gap-1">
-          <span className="ui-label">Fecha recepción</span>
-          <input
-            type="date"
-            name="received_at"
-            className="ui-input"
-            value={receivedAt}
-            onChange={(e) => setReceivedAt(e.target.value)}
-          />
-        </label>
-      </div>
-
-      {entryMode === "normal" ? (
-        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950">
-          <div className="font-semibold">Recepción normal</div>
-          <p className="mt-1">
-            Esta recepción quedará vinculada a la orden de compra seleccionada.
-          </p>
-        </div>
-      ) : hasPurchaseOrderOptions ? (
-        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-          <div className="font-semibold">Recepción de emergencia</div>
-          <p className="mt-1">
-            Esta recepción no está vinculada a una orden de compra. Registra el motivo para dejar trazabilidad.
-          </p>
-        </div>
-      ) : null}
-
-      <div className="grid gap-3 md:grid-cols-2">
-        <label className="flex flex-col gap-1">
-          <span className="ui-label">Factura / referencia</span>
-          <input
-            name="invoice_number"
-            className="ui-input"
-            placeholder={entryMode === "emergency" ? "Referencia obligatoria si aplica" : "FAC-0001"}
-            value={invoiceNumber}
-            onChange={(e) => setInvoiceNumber(e.target.value)}
-          />
-        </label>
-        <label className="flex flex-col gap-1">
-          <span className="ui-label">Notas</span>
-          <input
-            name="notes"
-            className="ui-input"
-            placeholder="Observaciones de recepcion"
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-          />
-        </label>
-      </div>
-
-      {entryMode === "emergency" ? (
-        <label className="flex flex-col gap-1">
-          <span className="ui-label">Motivo de emergencia</span>
-          <input
-            className="ui-input"
-            placeholder="Ej: compra urgente sin OC por falta de stock"
-            value={emergencyReason}
-            onChange={(e) => setEmergencyReason(e.target.value)}
-            required
-          />
-          {fieldErrors["emergency_reason"] ? (
-            <span className="text-xs text-rose-600">{fieldErrors["emergency_reason"]}</span>
-          ) : null}
-        </label>
-      ) : null}
-
-      <div className="flex items-center justify-between">
-        <div className="ui-h3">Items de recepcion</div>
-        {!isPurchaseOrderReceipt ? (
-          <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={addLine}>
-            + Agregar item
-          </button>
-        ) : null}
-      </div>
-
-      <div className="space-y-3">
-        {fieldErrors["lines"] ? (
-          <p className="text-sm text-rose-600">{fieldErrors["lines"]}</p>
-        ) : null}
-        {lines.map((line, index) => {
-          const product = line.productId ? productMap.get(line.productId) : undefined;
-          const stockUnitCode = line.stockUnitCode || getProductStockUnitCode(product);
-          const inputUnitLabel = line.inputUnitLabel || line.inputUnitCode || stockUnitCode;
-          const inputQty = Number(line.quantity || 0);
-          const conversionFactorToStock = Number(line.conversionFactorToStock || 0);
-          const stockQty =
-            inputQty > 0 && conversionFactorToStock > 0
-              ? inputQty * conversionFactorToStock
-              : 0;
-          const inputUnitCost = Number(line.unitCost || 0);
-          const stockUnitCost =
-            inputUnitCost > 0 && conversionFactorToStock > 0
-              ? inputUnitCost / conversionFactorToStock
-              : 0;
-
-          return (
-            <div key={`line-${index}`} className="ui-panel-soft grid gap-3 md:grid-cols-8">
-              <div className="md:col-span-8 flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-sm font-semibold text-[var(--ui-text)]">
-                    Item {index + 1}
-                  </div>
-                  <div className="text-xs text-[var(--ui-muted)]">
-                    Selecciona producto, destino operativo y cantidad recibida.
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  className="ui-btn ui-btn--ghost ui-btn--sm shrink-0"
-                  onClick={() => removeLine(index)}
-                  disabled={lines.length <= 1}
-                >
-                  Quitar
-                </button>
-              </div>
-
-              <div className="md:col-span-2">
-                <label className="block">
-                  <span className="ui-label">Producto</span>
-                  <input
-                    className="ui-input mt-1 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
-                    list={`receipt-products-${index}`}
-                    placeholder="Buscar producto por nombre o unidad"
-                    value={getLineProductInputValue(line)}
-                    autoComplete="off"
-                    disabled={isPurchaseOrderReceipt}
-                    onChange={(e) => {
-                      const nextSearch = e.target.value;
-                      const matchedProductId = productIdByLabel.get(nextSearch) ?? "";
-
-                      const matchedProduct = matchedProductId ? productMap.get(matchedProductId) : undefined;
-                      const matchedStockUnitCode = getProductStockUnitCode(matchedProduct);
-
-                      updateLine(index, {
-                        productSearch: nextSearch,
-                        productId: matchedProductId,
-                        presentationId: "",
-                        inputUnitCode: matchedStockUnitCode,
-                        inputUnitLabel: matchedStockUnitCode,
-                        conversionFactorToStock: "1",
-                        stockUnitCode: matchedStockUnitCode,
-                      });
-                    }}
-                  />
-                </label>
-
-                <datalist id={`receipt-products-${index}`}>
-                  {getProductSuggestions(getLineProductInputValue(line)).map((product) => (
-                    <option key={product.id} value={product.label} />
-                  ))}
-                </datalist>
-
-                <input type="hidden" name="item_product_id" value={line.productId} />
-                <input type="hidden" name="item_presentation_id" value={line.presentationId} />
-                <input type="hidden" name="item_input_unit_code" value={line.inputUnitCode || stockUnitCode} />
-                <input type="hidden" name="item_input_unit_label" value={inputUnitLabel} />
-                <input
-                  type="hidden"
-                  name="item_conversion_factor_to_stock"
-                  value={conversionFactorToStock > 0 ? String(conversionFactorToStock) : "1"}
-                />
-                <input type="hidden" name="item_stock_unit_code" value={stockUnitCode} />
-                <input
-                  type="hidden"
-                  name="item_purchase_order_item_id"
-                  value={line.purchaseOrderItemId}
-                />
-
-                {line.productId ? (
-                  <div className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-950">
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <div className="font-semibold">Producto seleccionado</div>
-                        <div className="mt-0.5">
-                          {productLabelById.get(line.productId) ?? line.productId}
-                        </div>
-                        <div className="mt-1 text-emerald-800">
-                          {productMap.get(line.productId)?.lot_tracking ? "Requiere lote" : "Sin lote"} ·{" "}
-                          {productMap.get(line.productId)?.expiry_tracking
-                            ? "Requiere vencimiento"
-                            : "Sin vencimiento"}
-                        </div>
-
-                        <div className="mt-1 text-emerald-800">
-                          Presentación: {inputUnitLabel}
-                        </div>
-
-                        {conversionFactorToStock > 0 ? (
-                          <div className="mt-1 text-emerald-800">
-                            1 {inputUnitLabel} = {formatQty(conversionFactorToStock)} {stockUnitCode}
-                          </div>
-                        ) : null}
-                      </div>
-                      {!isPurchaseOrderReceipt ? (
-                        <button
-                          type="button"
-                          className="rounded-full border border-emerald-300 bg-white px-2 py-1 text-[11px] font-semibold text-emerald-900"
-                          onClick={() =>
-                            updateLine(index, {
-                              productId: "",
-                              productSearch: "",
-                              purchaseOrderItemId: "",
-                              presentationId: "",
-                              inputUnitCode: "",
-                              inputUnitLabel: "",
-                              conversionFactorToStock: "1",
-                              stockUnitCode: "",
-                            })
-                          }
-                        >
-                          Cambiar
-                        </button>
-                      ) : null}
-                    </div>
-                  </div>
-                ) : line.productSearch ? (
-                  <p className="mt-1 text-xs text-amber-700">
-                    Selecciona una opción exacta de la lista para validar el producto.
-                  </p>
-                ) : (
-                  <p className="mt-1 text-xs text-[var(--ui-muted)]">
-                    Escribe y selecciona un producto de la lista.
-                  </p>
-                )}
-
-                {fieldErrors[`line_${index}_productId`] ? (
-                  <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_productId`]}</p>
-                ) : null}
-              </div>
-
-              <label>
-                <span className="ui-label">Destino operativo</span>
+          <div className="mt-5 grid gap-3 lg:grid-cols-4">
+            <label className="flex flex-col gap-1 lg:col-span-2">
+              <span className="ui-label">Orden de compra</span>
+              {hasPurchaseOrderOptions ? (
                 <select
-                  name="item_location_id"
-                  className="ui-input mt-1"
-                  value={line.locationId}
-                  onChange={(e) => updateLine(index, { locationId: e.target.value, positionId: "" })}
+                  className="ui-input"
+                  value={selectedPurchaseOrderId}
+                  onChange={(e) => onPurchaseOrderChange(e.target.value)}
                 >
-                  <option value="">Seleccionar</option>
-                  {locations.map((location) => (
-                    <option key={location.id} value={location.id}>
-                      {formatReceiptLocationLabel(location)}
+                  <option value="">Recepción directa sin OC</option>
+                  {poOptions.map((po) => (
+                    <option key={po.value} value={po.value}>
+                      {po.label}
                     </option>
                   ))}
                 </select>
-                {fieldErrors[`line_${index}_locationId`] ? (
-                  <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_locationId`]}</p>
-                ) : null}
-              </label>
-
-              {positionsByLocationId.get(line.locationId)?.length ? (
-                <label>
-                  <span className="ui-label">Ubicación interna</span>
-                  <select
-                    name="item_location_position_id"
-                    className="ui-input mt-1"
-                    value={line.positionId}
-                    onChange={(e) => updateLine(index, { positionId: e.target.value })}
-                  >
-                    <option value="">Sin posición interna</option>
-                    {positionsByLocationId.get(line.locationId)?.map((position) => (
-                      <option key={position.id} value={position.id}>
-                        {formatLocationPositionLabel(position)}
-                      </option>
-                    ))}
-                  </select>
-                  <p className="mt-1 text-xs text-[var(--ui-muted)]">
-                    Opcional. Úsalo para estantería, piso, nivel o bin.
-                  </p>
-                </label>
               ) : (
-                <input type="hidden" name="item_location_position_id" value="" />
+                <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-4 py-3 text-sm text-[var(--ui-muted)]">
+                  No hay órdenes activas para esta sede. Puedes registrar una recepción directa.
+                </div>
               )}
+            </label>
 
-              <label>
-                <span className="ui-label">Cantidad recibida</span>
-                <input
-                  name="item_quantity_received"
-                  className="ui-input mt-1"
-                  type="number"
-                  step="0.000001"
-                  min="0"
-                  value={line.quantity}
-                  onChange={(e) => updateLine(index, { quantity: e.target.value })}
-                />
-                <p className="mt-1 text-xs text-[var(--ui-muted)]">
-                  {inputQty > 0 && conversionFactorToStock > 0
-                    ? `${formatQty(inputQty)} ${inputUnitLabel} = ${formatQty(stockQty)} ${stockUnitCode}`
-                    : `Cantidad en ${inputUnitLabel}.`}
-                </p>
-                {fieldErrors[`line_${index}_quantity`] ? (
-                  <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_quantity`]}</p>
-                ) : null}
-                {fieldErrors[`line_${index}_presentation`] ? (
-                  <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_presentation`]}</p>
-                ) : null}
-              </label>
+            <label className="flex flex-col gap-1">
+              <span className="ui-label">Proveedor</span>
+              <select
+                name="supplier_id"
+                className="ui-input"
+                value={supplierId}
+                onChange={(e) => setSupplierId(e.target.value)}
+                required
+                disabled={isPurchaseOrderReceipt && Boolean(prefillSupplierId)}
+              >
+                <option value="">Seleccionar proveedor</option>
+                {suppliers.map((supplier) => (
+                  <option key={supplier.id} value={supplier.id}>
+                    {supplier.name ?? supplier.id}
+                  </option>
+                ))}
+              </select>
+              {fieldErrors["supplier_id"] ? (
+                <span className="text-xs text-rose-600">{fieldErrors["supplier_id"]}</span>
+              ) : null}
+            </label>
 
-              <label>
-                <span className="ui-label">Costo unitario</span>
-                <input
-                  name="item_unit_cost"
-                  className="ui-input mt-1"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={line.unitCost}
-                  onChange={(e) => updateLine(index, { unitCost: e.target.value })}
-                />
-                <p className="mt-1 text-xs text-[var(--ui-muted)]">
-                  {inputUnitCost > 0 && stockUnitCost > 0
-                    ? `${formatAmount(inputUnitCost)} por ${inputUnitLabel} · ${formatAmount(stockUnitCost)} por ${stockUnitCode}`
-                    : `Costo por ${inputUnitLabel}.`}
-                </p>
-              </label>
+            <label className="flex flex-col gap-1">
+              <span className="ui-label">Fecha recepción</span>
+              <input
+                type="date"
+                name="received_at"
+                className="ui-input"
+                value={receivedAt}
+                onChange={(e) => setReceivedAt(e.target.value)}
+              />
+            </label>
+          </div>
 
-              <label>
-                <span className="ui-label">Lote</span>
-                <input
-                  name="item_lot_number"
-                  className="ui-input mt-1"
-                  placeholder="Opcional"
-                  value={line.lotNumber}
-                  onChange={(e) => updateLine(index, { lotNumber: e.target.value })}
-                  required={Boolean(line.productId && productMap.get(line.productId)?.lot_tracking)}
-                />
-                {fieldErrors[`line_${index}_lotNumber`] ? (
-                  <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_lotNumber`]}</p>
-                ) : null}
-              </label>
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            <label className="flex flex-col gap-1">
+              <span className="ui-label">Factura / referencia</span>
+              <input
+                name="invoice_number"
+                className="ui-input"
+                placeholder="Factura, remisión o referencia del proveedor"
+                value={invoiceNumber}
+                onChange={(e) => setInvoiceNumber(e.target.value)}
+              />
+            </label>
 
-              <label>
-                <span className="ui-label">Vencimiento</span>
-                <input
-                  name="item_expiry_date"
-                  className="ui-input mt-1"
-                  type="date"
-                  value={line.expiryDate}
-                  onChange={(e) => updateLine(index, { expiryDate: e.target.value })}
-                  required={Boolean(line.productId && productMap.get(line.productId)?.expiry_tracking)}
-                />
-                {fieldErrors[`line_${index}_expiryDate`] ? (
-                  <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_expiryDate`]}</p>
-                ) : null}
-              </label>
+            <label className="flex flex-col gap-1">
+              <span className="ui-label">Notas generales</span>
+              <input
+                name="notes"
+                className="ui-input"
+                placeholder="Observaciones de recepción"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+              />
+            </label>
+          </div>
 
-              <label>
-                <span className="ui-label">Notas item</span>
-                <input
-                  name="item_notes"
-                  className="ui-input mt-1"
-                  placeholder="Opcional"
-                  value={line.notes}
-                  onChange={(e) => updateLine(index, { notes: e.target.value })}
-                />
-              </label>
+          {isDirectReceipt ? (
+            <div className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-950">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="font-semibold">Recepción directa sin OC</div>
+                  <p className="mt-1">
+                    No se bloquea el flujo por no existir OC. El sistema dejará trazabilidad y actualizará costos reales desde la recepción.
+                  </p>
+                </div>
+
+                <label className="inline-flex items-center gap-2 rounded-full border border-sky-200 bg-white px-3 py-2 text-xs font-semibold">
+                  <input
+                    type="checkbox"
+                    checked={isExceptionReceipt}
+                    onChange={(e) => setIsExceptionReceipt(e.target.checked)}
+                  />
+                  Marcar como excepción
+                </label>
+              </div>
+
+              {isExceptionReceipt ? (
+                <label className="mt-3 flex flex-col gap-1">
+                  <span className="ui-label">Motivo de excepción</span>
+                  <input
+                    className="ui-input bg-white"
+                    placeholder="Ej: compra urgente sin OC por falta de stock"
+                    value={emergencyReason}
+                    onChange={(e) => setEmergencyReason(e.target.value)}
+                  />
+                  {fieldErrors["emergency_reason"] ? (
+                    <span className="text-xs text-rose-600">{fieldErrors["emergency_reason"]}</span>
+                  ) : null}
+                </label>
+              ) : null}
             </div>
-          );
-        })}
+          ) : (
+            <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950">
+              <div className="font-semibold">Recepción vinculada a OC</div>
+              <p className="mt-1">
+                Los productos y presentaciones vienen desde la orden seleccionada. Ajusta cantidad, costo real, impuestos y destino físico.
+              </p>
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-[1.75rem] border border-[var(--ui-border)] bg-white p-5 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-lg font-bold text-[var(--ui-text)]">Insumos recibidos</h3>
+              <p className="mt-1 text-sm text-[var(--ui-muted)]">
+                Primero selecciona proveedor; después agrega insumos, presentación, costo, LOC y ubicación interna.
+              </p>
+            </div>
+
+            {!isPurchaseOrderReceipt ? (
+              <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={addLine}>
+                + Agregar insumo
+              </button>
+            ) : null}
+          </div>
+
+          {supplierId && !productsHaveSupplierLinks ? (
+            <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+              <div className="font-semibold">Catálogo proveedor-producto pendiente de conectar</div>
+              <p className="mt-1">
+                Esta versión mejora la experiencia visual y elimina el selector negro. En el siguiente paso conectamos
+                `product_suppliers` y `procurement_supplier_product_costs` desde la página para filtrar por proveedor.
+              </p>
+            </div>
+          ) : null}
+
+          {fieldErrors["lines"] ? (
+            <p className="mt-4 text-sm text-rose-600">{fieldErrors["lines"]}</p>
+          ) : null}
+
+          <div className="mt-4 space-y-4">
+            {lines.map((line, index) => {
+              const product = line.productId ? productMap.get(line.productId) : undefined;
+              const stockUnitCode = line.stockUnitCode || getProductStockUnitCode(product);
+              const inputUnitLabel = line.inputUnitLabel || line.inputUnitCode || stockUnitCode;
+              const cost = computeLineCost({
+                ...line,
+                stockUnitCode,
+                inputUnitLabel,
+                conversionFactorToStock: line.conversionFactorToStock || "1",
+              });
+              const linePositions = positionsByLocationId.get(line.locationId) ?? [];
+              const hasInternalPositions = linePositions.length > 0;
+              const productPresentations = product?.presentations ?? [];
+
+              return (
+                <div key={`line-${index}`} className="rounded-[1.5rem] border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-bold text-[var(--ui-text)]">
+                        Línea {index + 1}
+                      </div>
+                      <div className="mt-1 text-xs text-[var(--ui-muted)]">
+                        {product ? shortProductName(product) : "Selecciona un insumo para empezar."}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      {product?.lot_tracking ? (
+                        <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-800">
+                          Requiere lote
+                        </span>
+                      ) : null}
+                      {product?.expiry_tracking ? (
+                        <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-800">
+                          Requiere vencimiento
+                        </span>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="ui-btn ui-btn--ghost ui-btn--sm"
+                        onClick={() => removeLine(index)}
+                        disabled={lines.length <= 1 || isPurchaseOrderReceipt}
+                      >
+                        Quitar
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid gap-4 2xl:grid-cols-[minmax(260px,1.4fr)_minmax(260px,1fr)_minmax(260px,1fr)]">
+                    <div className="rounded-2xl border border-[var(--ui-border)] bg-white p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-bold text-[var(--ui-text)]">Insumo</div>
+                          <div className="text-xs text-[var(--ui-muted)]">
+                            {selectedSupplier
+                              ? `Proveedor: ${selectedSupplier.name ?? selectedSupplier.id}`
+                              : "Selecciona proveedor para priorizar sus insumos."}
+                          </div>
+                        </div>
+                      </div>
+
+                      {isPurchaseOrderReceipt && product ? (
+                        <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
+                          <div className="font-semibold">{formatProductOptionLabel(product)}</div>
+                          <div className="mt-1 text-xs">
+                            Línea cargada desde la orden de compra.
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="mt-3">
+                          <input
+                            className="ui-input"
+                            placeholder="Buscar insumo por nombre o unidad"
+                            value={line.productSearch}
+                            autoComplete="off"
+                            onFocus={() => setActiveProductPickerIndex(index)}
+                            onChange={(e) => {
+                              updateLine(index, {
+                                productSearch: e.target.value,
+                                productId: "",
+                                presentationId: "",
+                              });
+                              setActiveProductPickerIndex(index);
+                            }}
+                          />
+
+                          {activeProductPickerIndex === index ? (
+                            <div className="mt-2 max-h-80 overflow-y-auto rounded-2xl border border-[var(--ui-border)] bg-white p-2 shadow-lg">
+                              {visibleProductOptionsByLine[index]?.map((option) => (
+                                <button
+                                  key={option.id}
+                                  type="button"
+                                  className="mb-2 w-full rounded-2xl border border-[var(--ui-border)] bg-white p-3 text-left transition hover:border-[var(--ui-brand)] hover:bg-[var(--ui-brand)]/5"
+                                  onClick={() => selectProduct(index, option)}
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                      <div className="text-sm font-bold text-[var(--ui-text)]">
+                                        {option.name ?? option.id}
+                                      </div>
+                                      <div className="mt-1 text-xs text-[var(--ui-muted)]">
+                                        Unidad stock: {getProductStockUnitCode(option)}
+                                      </div>
+                                      <div className="mt-1 text-xs text-[var(--ui-muted)]">
+                                        Presentaciones: {(option.presentations ?? []).length || "base"}
+                                      </div>
+                                    </div>
+                                    <span className="rounded-full border border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-2 py-1 text-[11px] font-semibold text-[var(--ui-muted)]">
+                                      Seleccionar
+                                    </span>
+                                  </div>
+                                </button>
+                              ))}
+
+                              {!visibleProductOptionsByLine[index]?.length ? (
+                                <div className="rounded-2xl border border-dashed border-[var(--ui-border)] p-4 text-sm text-[var(--ui-muted)]">
+                                  No encontramos ese insumo. En el siguiente paso conectamos creación rápida de insumo y presentación.
+                                </div>
+                              ) : null}
+
+                              <div className="grid gap-2 pt-2 sm:grid-cols-2">
+                                <button
+                                  type="button"
+                                  className="rounded-2xl border border-dashed border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-3 py-2 text-left text-xs font-semibold text-[var(--ui-muted)]"
+                                  onClick={() => setActiveProductPickerIndex(null)}
+                                >
+                                  Crear nuevo insumo · siguiente paso
+                                </button>
+                                <button
+                                  type="button"
+                                  className="rounded-2xl border border-dashed border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-3 py-2 text-left text-xs font-semibold text-[var(--ui-muted)]"
+                                  onClick={() => setActiveProductPickerIndex(null)}
+                                >
+                                  Asociar proveedor secundario · siguiente paso
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      )}
+
+                      <input type="hidden" name="item_product_id" value={line.productId} />
+                      <input type="hidden" name="item_purchase_order_item_id" value={line.purchaseOrderItemId} />
+
+                      {fieldErrors[`line_${index}_productId`] ? (
+                        <p className="mt-2 text-xs text-rose-600">{fieldErrors[`line_${index}_productId`]}</p>
+                      ) : null}
+                    </div>
+
+                    <div className="rounded-2xl border border-[var(--ui-border)] bg-white p-4">
+                      <div className="text-sm font-bold text-[var(--ui-text)]">Presentación y cantidad</div>
+                      <div className="mt-1 text-xs text-[var(--ui-muted)]">
+                        La cantidad recibida se convierte a unidad stock.
+                      </div>
+
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                        {productPresentations.length > 0 && !isPurchaseOrderReceipt ? (
+                          <label className="sm:col-span-2">
+                            <span className="ui-label">Presentación existente</span>
+                            <select
+                              className="ui-input mt-1"
+                              value={line.presentationId}
+                              onChange={(e) => {
+                                const presentation = productPresentations.find((row) => row.id === e.target.value);
+                                if (!presentation) {
+                                  updateLine(index, { presentationId: "" });
+                                  return;
+                                }
+
+                                updateLine(index, {
+                                  presentationId: presentation.id,
+                                  inputUnitCode: presentation.input_unit_code,
+                                  inputUnitLabel: presentation.label,
+                                  conversionFactorToStock: String(presentation.qty_in_stock_unit || 1),
+                                });
+                              }}
+                            >
+                              <option value="">Manual / nueva presentación</option>
+                              {productPresentations.map((presentation) => (
+                                <option key={presentation.id} value={presentation.id}>
+                                  {presentation.label} · 1 = {formatQty(Number(presentation.qty_in_stock_unit ?? 0))} {stockUnitCode}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        ) : null}
+
+                        <label>
+                          <span className="ui-label">Presentación recibida</span>
+                          <input
+                            className="ui-input mt-1"
+                            placeholder="Ej: Caja x 12, bolsa 2.5 kg"
+                            value={inputUnitLabel}
+                            disabled={isPurchaseOrderReceipt}
+                            onChange={(e) => updateManualPresentation(index, e.target.value)}
+                          />
+                        </label>
+
+                        <label>
+                          <span className="ui-label">Factor a stock</span>
+                          <input
+                            className="ui-input mt-1"
+                            type="number"
+                            step="0.000001"
+                            min="0.000001"
+                            value={line.conversionFactorToStock}
+                            disabled={isPurchaseOrderReceipt}
+                            onChange={(e) => updateLine(index, { conversionFactorToStock: e.target.value })}
+                          />
+                        </label>
+
+                        <label>
+                          <span className="ui-label">Cantidad recibida</span>
+                          <input
+                            name="item_quantity_received"
+                            className="ui-input mt-1"
+                            type="number"
+                            step="0.000001"
+                            min="0"
+                            value={line.quantity}
+                            onChange={(e) => updateLine(index, { quantity: e.target.value })}
+                          />
+                        </label>
+
+                        <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3 text-xs text-[var(--ui-muted)]">
+                          <div className="font-semibold text-[var(--ui-text)]">Conversión</div>
+                          <div className="mt-1">
+                            {cost.inputQty > 0
+                              ? `${formatQty(cost.inputQty)} ${inputUnitLabel} = ${formatQty(cost.stockQty)} ${stockUnitCode}`
+                              : `Cantidad en ${inputUnitLabel || stockUnitCode}.`}
+                          </div>
+                        </div>
+                      </div>
+
+                      <input type="hidden" name="item_presentation_id" value={line.presentationId} />
+                      <input type="hidden" name="item_input_unit_code" value={line.inputUnitCode || normalizeUnitCode(inputUnitLabel) || stockUnitCode} />
+                      <input type="hidden" name="item_input_unit_label" value={inputUnitLabel} />
+                      <input type="hidden" name="item_conversion_factor_to_stock" value={String(cost.conversionFactorToStock || 1)} />
+                      <input type="hidden" name="item_stock_unit_code" value={stockUnitCode} />
+
+                      {fieldErrors[`line_${index}_quantity`] ? (
+                        <p className="mt-2 text-xs text-rose-600">{fieldErrors[`line_${index}_quantity`]}</p>
+                      ) : null}
+                      {fieldErrors[`line_${index}_presentation`] ? (
+                        <p className="mt-2 text-xs text-rose-600">{fieldErrors[`line_${index}_presentation`]}</p>
+                      ) : null}
+                    </div>
+
+                    <div className="rounded-2xl border border-[var(--ui-border)] bg-white p-4">
+                      <div className="text-sm font-bold text-[var(--ui-text)]">Costo e impuestos</div>
+                      <div className="mt-1 text-xs text-[var(--ui-muted)]">
+                        El costo de inventario se calcula con neto sin impuesto.
+                      </div>
+
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                        <label className="sm:col-span-2">
+                          <span className="ui-label">Precio digitado</span>
+                          <input
+                            className="ui-input mt-1"
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={line.unitCost}
+                            onChange={(e) => updateLine(index, { unitCost: e.target.value })}
+                          />
+                        </label>
+
+                        <label>
+                          <span className="ui-label">Tipo de precio</span>
+                          <select
+                            className="ui-input mt-1"
+                            value={line.costInputMode}
+                            onChange={(e) => updateLine(index, { costInputMode: e.target.value === "gross" ? "gross" : "net" })}
+                          >
+                            <option value="net">Sin impuesto</option>
+                            <option value="gross">Con impuesto incluido</option>
+                          </select>
+                        </label>
+
+                        <label>
+                          <span className="ui-label">IVA / impuesto %</span>
+                          <input
+                            className="ui-input mt-1"
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={line.taxRate}
+                            onChange={(e) => updateLine(index, { taxRate: e.target.value })}
+                          />
+                        </label>
+                      </div>
+
+                      <div className="mt-3 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3 text-xs">
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <div>
+                            <span className="text-[var(--ui-muted)]">Neto presentación</span>
+                            <div className="font-bold text-[var(--ui-text)]">{formatAmount(cost.netUnitCost)}</div>
+                          </div>
+                          <div>
+                            <span className="text-[var(--ui-muted)]">Bruto presentación</span>
+                            <div className="font-bold text-[var(--ui-text)]">{formatAmount(cost.grossUnitCost)}</div>
+                          </div>
+                          <div>
+                            <span className="text-[var(--ui-muted)]">Costo stock</span>
+                            <div className="font-bold text-[var(--ui-text)]">{formatAmount(cost.stockUnitCost)} / {stockUnitCode}</div>
+                          </div>
+                          <div>
+                            <span className="text-[var(--ui-muted)]">Total línea</span>
+                            <div className="font-bold text-[var(--ui-text)]">{formatAmount(cost.grossTotal)}</div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <input type="hidden" name="item_unit_cost" value={cost.netUnitCost > 0 ? String(Math.round(cost.netUnitCost * 1000000) / 1000000) : ""} />
+                      <input type="hidden" name="item_cost_input_mode" value={line.costInputMode} />
+                      <input type="hidden" name="item_tax_included" value={cost.taxIncluded ? "true" : "false"} />
+                      <input type="hidden" name="item_tax_rate" value={String(cost.taxRate)} />
+                      <input type="hidden" name="item_net_unit_cost" value={String(cost.netUnitCost)} />
+                      <input type="hidden" name="item_gross_unit_cost" value={String(cost.grossUnitCost)} />
+                      <input type="hidden" name="item_net_total_cost" value={String(cost.netTotal)} />
+                      <input type="hidden" name="item_gross_total_cost" value={String(cost.grossTotal)} />
+                      <input type="hidden" name="item_tax_amount" value={String(cost.taxAmount)} />
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid gap-3 lg:grid-cols-4">
+                    <label>
+                      <span className="ui-label">LOC / destino operativo</span>
+                      <select
+                        name="item_location_id"
+                        className="ui-input mt-1"
+                        value={line.locationId}
+                        onChange={(e) => updateLine(index, { locationId: e.target.value, positionId: "" })}
+                      >
+                        <option value="">Seleccionar LOC</option>
+                        {locations.map((location) => (
+                          <option key={location.id} value={location.id}>
+                            {formatReceiptLocationLabel(location)}
+                          </option>
+                        ))}
+                      </select>
+                      {fieldErrors[`line_${index}_locationId`] ? (
+                        <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_locationId`]}</p>
+                      ) : null}
+                    </label>
+
+                    {hasInternalPositions ? (
+                      <label className="lg:col-span-2">
+                        <span className="ui-label">Ubicación interna</span>
+                        <select
+                          name="item_location_position_id"
+                          className="ui-input mt-1"
+                          value={line.positionId}
+                          onChange={(e) => updateLine(index, { positionId: e.target.value })}
+                        >
+                          <option value="">Sin posición interna</option>
+                          {linePositions.map((position) => (
+                            <option key={position.id} value={position.id}>
+                              {positionLabelById.get(position.id) ?? positionBaseLabel(position)}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="mt-1 text-xs text-[var(--ui-muted)]">
+                          Se muestra como ruta jerárquica: estantería &gt; nivel &gt; bin.
+                        </p>
+                      </label>
+                    ) : (
+                      <div className="lg:col-span-2 rounded-2xl border border-[var(--ui-border)] bg-white px-4 py-3 text-xs text-[var(--ui-muted)]">
+                        Este LOC no tiene ubicaciones internas configuradas.
+                        <input type="hidden" name="item_location_position_id" value="" />
+                      </div>
+                    )}
+
+                    <label>
+                      <span className="ui-label">Notas línea</span>
+                      <input
+                        name="item_notes"
+                        className="ui-input mt-1"
+                        placeholder="Opcional"
+                        value={line.notes}
+                        onChange={(e) => updateLine(index, { notes: e.target.value })}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    <label>
+                      <span className="ui-label">Lote</span>
+                      <input
+                        name="item_lot_number"
+                        className="ui-input mt-1"
+                        placeholder={product?.lot_tracking ? "Obligatorio" : "Opcional"}
+                        value={line.lotNumber}
+                        onChange={(e) => updateLine(index, { lotNumber: e.target.value })}
+                        required={Boolean(line.productId && productMap.get(line.productId)?.lot_tracking)}
+                      />
+                      {fieldErrors[`line_${index}_lotNumber`] ? (
+                        <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_lotNumber`]}</p>
+                      ) : null}
+                    </label>
+
+                    <label>
+                      <span className="ui-label">Vencimiento</span>
+                      <input
+                        name="item_expiry_date"
+                        className="ui-input mt-1"
+                        type="date"
+                        value={line.expiryDate}
+                        onChange={(e) => updateLine(index, { expiryDate: e.target.value })}
+                        required={Boolean(line.productId && productMap.get(line.productId)?.expiry_tracking)}
+                      />
+                      {fieldErrors[`line_${index}_expiryDate`] ? (
+                        <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_expiryDate`]}</p>
+                      ) : null}
+                    </label>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
       </div>
 
-      <div className="flex justify-end">
-        {serverErrorMessage ? (
-          <p className="mr-auto text-sm text-rose-600">{serverErrorMessage}</p>
-        ) : null}
-        <button type="submit" className="ui-btn ui-btn--brand">
-          Registrar recepcion
-        </button>
-      </div>
+      <aside className="xl:sticky xl:top-4 xl:self-start">
+        <div className="rounded-[1.75rem] border border-[var(--ui-border)] bg-white p-5 shadow-sm">
+          <div className="text-lg font-bold text-[var(--ui-text)]">Resumen de recepción</div>
+          <p className="mt-1 text-sm text-[var(--ui-muted)]">
+            Verifica proveedor, líneas, impuestos y costo de inventario antes de registrar.
+          </p>
+
+          <div className="mt-4 space-y-3">
+            <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3">
+              <div className="text-xs font-semibold uppercase tracking-wide text-[var(--ui-muted)]">Proveedor</div>
+              <div className="mt-1 text-sm font-bold text-[var(--ui-text)]">
+                {selectedSupplier?.name ?? "Sin seleccionar"}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-[var(--ui-muted)]">Líneas</div>
+                <div className="mt-1 text-2xl font-bold text-[var(--ui-text)]">{receiptTotals.validLines}</div>
+              </div>
+              <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-[var(--ui-muted)]">Stock</div>
+                <div className="mt-1 text-sm font-bold text-[var(--ui-text)]">{formatQty(receiptTotals.stockQty)}</div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-[var(--ui-muted)]">Total neto</span>
+                <span className="font-bold text-[var(--ui-text)]">{formatAmount(receiptTotals.netTotal)}</span>
+              </div>
+              <div className="mt-2 flex items-center justify-between text-sm">
+                <span className="text-[var(--ui-muted)]">Impuestos</span>
+                <span className="font-bold text-[var(--ui-text)]">{formatAmount(receiptTotals.taxAmount)}</span>
+              </div>
+              <div className="mt-2 border-t border-[var(--ui-border)] pt-2 flex items-center justify-between text-sm">
+                <span className="font-semibold text-[var(--ui-text)]">Total factura</span>
+                <span className="font-bold text-[var(--ui-text)]">{formatAmount(receiptTotals.grossTotal)}</span>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-sky-200 bg-sky-50 p-3 text-xs leading-5 text-sky-950">
+              El costo promedio operativo se calcula con el valor neto. El bruto queda disponible para trazabilidad de factura.
+            </div>
+
+            {serverErrorMessage ? (
+              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                {serverErrorMessage}
+              </div>
+            ) : null}
+
+            <button type="submit" className="ui-btn ui-btn--brand w-full">
+              Registrar recepción
+            </button>
+
+            <button
+              type="button"
+              className="ui-btn ui-btn--ghost w-full"
+              onClick={() => {
+                window.sessionStorage.removeItem(storageKey);
+                setLines([makeEmptyLine(defaultLocationId)]);
+                setInvoiceNumber("");
+                setNotes("");
+                setReceivedAt("");
+                setEmergencyReason("");
+                setIsExceptionReceipt(false);
+              }}
+            >
+              Limpiar borrador
+            </button>
+          </div>
+        </div>
+      </aside>
     </form>
   );
 }
