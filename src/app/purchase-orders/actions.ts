@@ -98,7 +98,6 @@ async function buildPurchaseOrderItemsFromForm(params: {
         .in("id", requestedPresentationIds)
         .eq("is_active", true)
         .eq("source", "manual")
-        .in("usage_context", ["general", "purchase"])
       : Promise.resolve({ data: [] as ProductPresentationRow[], error: null }),
     requestedProductIds.length
       ? params.supabase

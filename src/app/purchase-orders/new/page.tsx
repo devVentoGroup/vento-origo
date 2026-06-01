@@ -134,8 +134,7 @@ export default async function NewPurchaseOrderPage({
         .in("product_id", productIds)
         .eq("is_active", true)
         .eq("source", "manual")
-        .in("usage_context", ["general", "purchase"])
-        .order("usage_context", { ascending: false })
+        .order("usage_context", { ascending: true })
         .order("is_default", { ascending: false })
         .order("label", { ascending: true })
     : { data: [] as Array<ProductPresentationOption & { source?: string | null; usage_context?: string | null }>, error: null };
@@ -235,7 +234,7 @@ export default async function NewPurchaseOrderPage({
         <h1 className="mt-2 ui-h1">Nueva orden de compra</h1>
         <p className="mt-2 ui-body-muted">
           Crea una orden desde proveedores configurados. ORIGO solo muestra insumos vinculados al proveedor
-          y presentaciones manuales configuradas.
+          y cualquier presentación manual activa configurada para el insumo.
         </p>
       </div>
 
