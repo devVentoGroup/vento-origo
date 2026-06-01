@@ -19,6 +19,37 @@ type ProductPresentationOption = {
   is_default: boolean;
 };
 
+type ProductRow = {
+  id: string;
+  name: string;
+  sku: string | null;
+  unit: string | null;
+  stock_unit_code: string | null;
+  cost: number | null;
+  product_type?: string | null;
+  is_active?: boolean | null;
+};
+
+type ProductSupplierLinkRow = {
+  product_id: string;
+  supplier_id: string;
+  is_primary?: boolean | null;
+  products?: ProductRow | ProductRow[] | null;
+};
+
+function firstRelated<T>(value: T | T[] | null | undefined): T | null {
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value ?? null;
+}
+
+function sortByNameSku<T extends { name?: string | null; sku?: string | null }>(rows: T[]) {
+  return rows.sort((a, b) => {
+    const aLabel = `${a.name ?? ""} ${a.sku ?? ""}`.trim();
+    const bLabel = `${b.name ?? ""} ${b.sku ?? ""}`.trim();
+    return aLabel.localeCompare(bLabel, "es", { sensitivity: "base" });
+  });
+}
+
 export default async function NewPurchaseOrderPage({
   searchParams,
 }: {
@@ -26,56 +57,94 @@ export default async function NewPurchaseOrderPage({
 }) {
   const { supabase, user } = await requireAppAccess({ appId: APP_ID, returnTo: RETURN_TO });
 
-  const [suppliersRes, sitesRes, productsRes] = await Promise.all([
+  const [suppliersRes, sitesRes] = await Promise.all([
     supabase.from("suppliers").select("id,name").eq("is_active", true).order("name"),
     supabase
       .from("employee_sites")
       .select("site_id,sites(id,name)")
       .eq("employee_id", user.id)
       .eq("is_active", true),
-    supabase.from("products").select("id,name,sku,unit,stock_unit_code,cost").order("name").limit(1200),
   ]);
 
   const suppliers = (suppliersRes.data ?? []) as { id: string; name: string }[];
   const sites = normalizeSitesFromEmployeeSites(sitesRes.data as EmployeeSiteRow[]);
-  const products = (productsRes.data ?? []) as {
-    id: string;
-    name: string;
-    sku: string | null;
-    unit: string | null;
-    stock_unit_code: string | null;
-    cost: number | null;
-  }[];
-  const productIds = products.map((product) => product.id);
-  const [{ data: supplierLinksData }, { data: productPresentationsData }] = productIds.length
-    ? await Promise.all([
-      supabase
+  const activeSupplierIds = suppliers.map((supplier) => supplier.id).filter(Boolean);
+
+  const supplierProductsRes = activeSupplierIds.length
+    ? await supabase
         .from("product_suppliers")
-        .select("product_id,supplier_id,is_primary")
-        .in("product_id", productIds),
-      supabase
-        .from("product_uom_profiles")
-        .select("id,product_id,label,input_unit_code,qty_in_stock_unit,is_default")
-        .in("product_id", productIds)
-        .eq("source", "manual")
-        .eq("usage_context", "general")
-        .eq("is_active", true)
-        .order("is_default", { ascending: false })
-        .order("label", { ascending: true }),
-    ])
-    : [{ data: [] }, { data: [] }];
+        .select(
+          `
+          product_id,
+          supplier_id,
+          is_primary,
+          products!inner(
+            id,
+            name,
+            sku,
+            unit,
+            stock_unit_code,
+            cost,
+            product_type,
+            is_active
+          )
+        `
+        )
+        .in("supplier_id", activeSupplierIds)
+        .eq("products.is_active", true)
+        .eq("products.product_type", "insumo")
+    : { data: [] as ProductSupplierLinkRow[], error: null };
+
+  const supplierProducts = (supplierProductsRes.data ?? []) as ProductSupplierLinkRow[];
+
+  const productById = new Map<string, ProductRow>();
   const supplierIdsByProduct = new Map<string, Set<string>>();
-  for (const row of (supplierLinksData ?? []) as Array<{ product_id: string; supplier_id: string; is_primary?: boolean | null }>) {
-    const productId = String(row.product_id ?? "").trim();
+
+  for (const row of supplierProducts) {
+    const product = firstRelated(row.products);
+    const productId = String(row.product_id ?? product?.id ?? "").trim();
     const supplierId = String(row.supplier_id ?? "").trim();
-    if (!productId || !supplierId) continue;
+
+    if (!product || !productId || !supplierId) continue;
+    if (product.is_active === false) continue;
+    if (String(product.product_type ?? "").trim().toLowerCase() !== "insumo") continue;
+
+    productById.set(productId, {
+      id: productId,
+      name: product.name,
+      sku: product.sku,
+      unit: product.unit,
+      stock_unit_code: product.stock_unit_code,
+      cost: product.cost,
+      product_type: product.product_type,
+      is_active: product.is_active,
+    });
+
     const current = supplierIdsByProduct.get(productId) ?? new Set<string>();
     current.add(supplierId);
     supplierIdsByProduct.set(productId, current);
   }
+
+  const productIds = Array.from(productById.keys());
+
+  const productPresentationsRes = productIds.length
+    ? await supabase
+        .from("product_uom_profiles")
+        .select("id,product_id,label,input_unit_code,qty_in_stock_unit,is_default,source,usage_context")
+        .in("product_id", productIds)
+        .eq("is_active", true)
+        .eq("source", "manual")
+        .in("usage_context", ["general", "purchase"])
+        .order("usage_context", { ascending: false })
+        .order("is_default", { ascending: false })
+        .order("label", { ascending: true })
+    : { data: [] as Array<ProductPresentationOption & { source?: string | null; usage_context?: string | null }>, error: null };
+
   const presentationsByProduct = new Map<string, ProductPresentationOption[]>();
 
-  for (const row of (productPresentationsData ?? []) as ProductPresentationOption[]) {
+  for (const row of (productPresentationsRes.data ?? []) as Array<
+    ProductPresentationOption & { source?: string | null; usage_context?: string | null }
+  >) {
     const productId = String(row.product_id ?? "").trim();
     if (!productId) continue;
 
@@ -91,28 +160,42 @@ export default async function NewPurchaseOrderPage({
     presentationsByProduct.set(productId, current);
   }
 
-  const productsWithSupplierLinks = products.map((product) => ({
-    ...product,
-    supplier_ids: Array.from(supplierIdsByProduct.get(product.id) ?? []),
-    presentations: presentationsByProduct.get(product.id) ?? [],
-  }));
+  const productsWithSupplierLinks = sortByNameSku(
+    Array.from(productById.values()).map((product) => ({
+      id: product.id,
+      name: product.name,
+      sku: product.sku,
+      unit: product.unit,
+      stock_unit_code: product.stock_unit_code,
+      cost: product.cost,
+      supplier_ids: Array.from(supplierIdsByProduct.get(product.id) ?? []),
+      presentations: presentationsByProduct.get(product.id) ?? [],
+    }))
+  );
+
+  const dataErrorMsg =
+    suppliersRes.error?.message ??
+    sitesRes.error?.message ??
+    supplierProductsRes.error?.message ??
+    productPresentationsRes.error?.message ??
+    null;
 
   const sp = (await searchParams) ?? {};
   const errorMsg = sp.error;
   let prefillDefaults:
     | {
-      supplier_id?: string;
-      site_id?: string;
-      expected_at?: string;
-      notes?: string | null;
-      lines?: Array<{
-        product_id?: string;
-        quantity?: number | null;
-        unit_cost?: number | null;
-        unit?: string | null;
-        presentation_id?: string | null;
-      }>;
-    }
+        supplier_id?: string;
+        site_id?: string;
+        expected_at?: string;
+        notes?: string | null;
+        lines?: Array<{
+          product_id?: string;
+          quantity?: number | null;
+          unit_cost?: number | null;
+          unit?: string | null;
+          presentation_id?: string | null;
+        }>;
+      }
     | undefined;
 
   if (sp.prefill) {
@@ -151,7 +234,8 @@ export default async function NewPurchaseOrderPage({
         </Link>
         <h1 className="mt-2 ui-h1">Nueva orden de compra</h1>
         <p className="mt-2 ui-body-muted">
-          Crea una orden en flujo guiado: cabecera, lineas y validacion final.
+          Crea una orden desde proveedores configurados. ORIGO solo muestra insumos vinculados al proveedor
+          y presentaciones manuales configuradas.
         </p>
       </div>
 
@@ -160,6 +244,12 @@ export default async function NewPurchaseOrderPage({
           {errorMsg === "supplier_site_required"
             ? "Proveedor y sede son obligatorios."
             : decodeURIComponent(errorMsg)}
+        </div>
+      ) : null}
+
+      {dataErrorMsg ? (
+        <div className="ui-alert ui-alert--error">
+          No se pudo cargar la configuración de compras: {dataErrorMsg}
         </div>
       ) : null}
 

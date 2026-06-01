@@ -175,19 +175,13 @@ export function PurchaseOrderGuidedForm({
     return new Map(products.map((product) => [product.id, product]));
   }, [products]);
 
-  const productsHaveSupplierLinks = useMemo(
-    () => products.some((product) => Array.isArray(product.supplier_ids) && product.supplier_ids.length > 0),
-    [products]
-  );
-
   const supplierFilteredProducts = useMemo(() => {
     if (!supplierId) return [];
-    if (!productsHaveSupplierLinks) return products;
 
     return products.filter((product) =>
       Array.isArray(product.supplier_ids) && product.supplier_ids.includes(supplierId)
     );
-  }, [products, productsHaveSupplierLinks, supplierId]);
+  }, [products, supplierId]);
 
   const visibleProductsByLine = useMemo(() => {
     return lineRows.map((line) => {
@@ -217,8 +211,7 @@ export function PurchaseOrderGuidedForm({
       const stockQuantity = quantity > 0 ? quantity * safeConversionFactor : 0;
       const stockUnitCost = Number(product?.cost ?? 0);
       const total = getInternalEstimatedLineTotal(product, stockQuantity);
-      const presentationRequired = presentations.length > 0;
-      const isValid = Boolean(product) && quantity > 0 && (!presentationRequired || Boolean(presentation));
+      const isValid = Boolean(product) && Boolean(presentation) && quantity > 0;
 
       return {
         product,
@@ -251,13 +244,11 @@ export function PurchaseOrderGuidedForm({
   };
 
   const selectProduct = (index: number, product: ProductOption) => {
-    const presentation = getDefaultPresentation(product);
-
     updateLine(index, {
       product_id: product.id,
       product_search: productLabel(product),
-      presentation_id: presentation?.id ?? "",
-      unit: presentation?.label ?? getStockUnitCode(product),
+      presentation_id: "",
+      unit: getStockUnitCode(product),
       unit_cost: "",
     });
     setActiveProductPickerIndex(null);
@@ -390,12 +381,12 @@ export function PurchaseOrderGuidedForm({
             />
           </label>
 
-          {!productsHaveSupplierLinks ? (
+          {supplierId && supplierFilteredProducts.length === 0 ? (
             <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-              <div className="font-semibold">Catálogo proveedor-producto pendiente</div>
+              <div className="font-semibold">Proveedor sin productos asociados</div>
               <p className="mt-1">
-                La pantalla filtra por proveedor cuando existen vínculos en product_suppliers.
-                Si aún no hay vínculos cargados, ORIGO permitirá buscar en el catálogo completo de forma temporal.
+                Este proveedor no tiene insumos vinculados en product_suppliers para esta orden.
+                Vincula primero los productos del proveedor en el catálogo antes de crear la OC.
               </p>
             </div>
           ) : null}
@@ -504,9 +495,7 @@ export function PurchaseOrderGuidedForm({
                               <div className="rounded-2xl border border-dashed border-[var(--ui-border)] p-4 text-sm text-[var(--ui-muted)]">
                                 {!supplierId
                                   ? "Selecciona primero un proveedor para cargar sus insumos."
-                                  : productsHaveSupplierLinks
-                                    ? "Este proveedor no tiene insumos asociados o no hay coincidencias con la búsqueda."
-                                    : "No encontramos ese insumo. Luego conectamos creación rápida desde este punto."}
+                                  : "Este proveedor no tiene insumos asociados o no hay coincidencias con la búsqueda."}
                               </div>
                             ) : null}
                           </div>
@@ -524,8 +513,9 @@ export function PurchaseOrderGuidedForm({
                         <div className="sm:col-span-2">
                           <span className="ui-label">Presentación</span>
                           {line.product_id && presentations.length === 0 ? (
-                            <div className="mt-1 rounded-[var(--ui-radius-control)] border border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-4 py-3 text-sm font-semibold text-[var(--ui-text)]">
-                              Sin presentación aprobada · pedir por unidad stock ({summary.stockUnitCode})
+                            <div className="mt-1 rounded-[var(--ui-radius-control)] border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-950">
+                              Sin presentación manual configurada. Crea una presentación activa para este producto
+                              antes de agregarlo a una OC.
                             </div>
                           ) : (
                             <select
@@ -533,10 +523,10 @@ export function PurchaseOrderGuidedForm({
                               onChange={(event) => handlePresentationChange(index, event.target.value)}
                               className="ui-input mt-1"
                               disabled={!line.product_id}
-                              required={presentations.length > 0}
+                              required
                             >
                               <option value="">
-                                {line.product_id ? "Seleccionar presentación" : "Primero selecciona producto"}
+                                {line.product_id ? "Seleccionar presentación manual" : "Primero selecciona producto"}
                               </option>
                               {presentations.map((presentation) => (
                                 <option key={presentation.id} value={presentation.id}>
@@ -573,14 +563,11 @@ export function PurchaseOrderGuidedForm({
                           </>
                         ) : line.product_id && presentations.length === 0 ? (
                           <>
-                            <div className="font-semibold text-[var(--ui-text)]">
-                              Unidad stock: {summary.stockUnitCode}
+                            <div className="font-semibold text-amber-900">
+                              Falta presentación manual
                             </div>
                             <div className="mt-1">
-                              {formatQty(summary.quantity)} {summary.stockUnitCode} solicitados.
-                            </div>
-                            <div className="mt-1">
-                              Crea presentaciones en catálogo cuando necesites pedir por caja, bolsa, paquete u otra unidad física.
+                              La OC exige una presentación manual para guardar la equivalencia a stock.
                             </div>
                           </>
                         ) : line.product_id ? (
@@ -645,7 +632,7 @@ export function PurchaseOrderGuidedForm({
 
             {!canSubmit ? (
               <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-950">
-                Completa proveedor, sede y al menos una línea con producto, presentación y cantidad.
+                Completa proveedor, sede y al menos una línea con producto, presentación manual y cantidad.
               </div>
             ) : null}
 

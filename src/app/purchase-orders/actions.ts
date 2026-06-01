@@ -42,6 +42,13 @@ type ProductStockRow = {
   id: string;
   unit: string | null;
   stock_unit_code: string | null;
+  product_type: string | null;
+  is_active: boolean | null;
+};
+
+type ProductSupplierRow = {
+  product_id: string;
+  supplier_id: string;
 };
 
 type PurchaseOrderItemInput = {
@@ -62,6 +69,7 @@ type PurchaseOrderItemInput = {
 async function buildPurchaseOrderItemsFromForm(params: {
   supabase: SupabaseClient;
   formData: FormData;
+  supplierId: string;
   errorHref: string;
 }): Promise<PurchaseOrderItemInput[]> {
   const productIds = params.formData.getAll("item_product_id").map((v) => String(v).trim());
@@ -78,24 +86,36 @@ async function buildPurchaseOrderItemsFromForm(params: {
     redirect(`${params.errorHref}?error=${encodeURIComponent("Cada linea debe tener una presentacion aprobada.")}`);
   }
 
-  const [{ data: presentationRows, error: presentationErr }, { data: productRows, error: productErr }] =
-    await Promise.all([
-      requestedPresentationIds.length
-        ? params.supabase
-          .from("product_uom_profiles")
-          .select("id,product_id,label,input_unit_code,qty_in_stock_unit,is_active,source,usage_context")
-          .in("id", requestedPresentationIds)
-          .eq("is_active", true)
-          .eq("source", "manual")
-          .eq("usage_context", "general")
-        : Promise.resolve({ data: [] as ProductPresentationRow[], error: null }),
-      requestedProductIds.length
-        ? params.supabase
-          .from("products")
-          .select("id,unit,stock_unit_code")
-          .in("id", requestedProductIds)
-        : Promise.resolve({ data: [] as ProductStockRow[], error: null }),
-    ]);
+  const [
+    { data: presentationRows, error: presentationErr },
+    { data: productRows, error: productErr },
+    { data: supplierProductRows, error: supplierProductErr },
+  ] = await Promise.all([
+    requestedPresentationIds.length
+      ? params.supabase
+        .from("product_uom_profiles")
+        .select("id,product_id,label,input_unit_code,qty_in_stock_unit,is_active,source,usage_context")
+        .in("id", requestedPresentationIds)
+        .eq("is_active", true)
+        .eq("source", "manual")
+        .in("usage_context", ["general", "purchase"])
+      : Promise.resolve({ data: [] as ProductPresentationRow[], error: null }),
+    requestedProductIds.length
+      ? params.supabase
+        .from("products")
+        .select("id,unit,stock_unit_code,product_type,is_active")
+        .in("id", requestedProductIds)
+        .eq("is_active", true)
+        .eq("product_type", "insumo")
+      : Promise.resolve({ data: [] as ProductStockRow[], error: null }),
+    requestedProductIds.length
+      ? params.supabase
+        .from("product_suppliers")
+        .select("product_id,supplier_id")
+        .eq("supplier_id", params.supplierId)
+        .in("product_id", requestedProductIds)
+      : Promise.resolve({ data: [] as ProductSupplierRow[], error: null }),
+  ]);
 
   if (presentationErr) {
     redirect(`${params.errorHref}?error=${encodeURIComponent(presentationErr.message)}`);
@@ -105,12 +125,20 @@ async function buildPurchaseOrderItemsFromForm(params: {
     redirect(`${params.errorHref}?error=${encodeURIComponent(productErr.message)}`);
   }
 
+  if (supplierProductErr) {
+    redirect(`${params.errorHref}?error=${encodeURIComponent(supplierProductErr.message)}`);
+  }
+
   const presentationById = new Map(
     ((presentationRows ?? []) as ProductPresentationRow[]).map((row) => [row.id, row])
   );
 
   const productById = new Map(
     ((productRows ?? []) as ProductStockRow[]).map((row) => [row.id, row])
+  );
+
+  const supplierProductIds = new Set(
+    ((supplierProductRows ?? []) as ProductSupplierRow[]).map((row) => String(row.product_id ?? "").trim()).filter(Boolean)
   );
 
   const items: PurchaseOrderItemInput[] = [];
@@ -138,6 +166,19 @@ async function buildPurchaseOrderItemsFromForm(params: {
     }
 
     const product = productById.get(productId);
+
+    if (!product || product.is_active === false || String(product.product_type ?? "").trim().toLowerCase() !== "insumo") {
+      redirect(`${params.errorHref}?error=${encodeURIComponent("El producto seleccionado no es un insumo activo.")}`);
+    }
+
+    if (!supplierProductIds.has(productId)) {
+      redirect(
+        `${params.errorHref}?error=${encodeURIComponent(
+          "El producto seleccionado no esta asociado al proveedor de la orden."
+        )}`
+      );
+    }
+
     const presentationLabel = String(presentation.label ?? "").trim();
     const stockUnitCode = String(product?.stock_unit_code ?? product?.unit ?? presentation.input_unit_code ?? "un")
       .trim()
@@ -200,6 +241,7 @@ export async function createPurchaseOrder(formData: FormData) {
   const items = await buildPurchaseOrderItemsFromForm({
     supabase,
     formData,
+    supplierId,
     errorHref: "/purchase-orders/new",
   });
 
@@ -295,6 +337,7 @@ export async function updatePurchaseOrder(id: string, formData: FormData) {
   const items = await buildPurchaseOrderItemsFromForm({
     supabase,
     formData,
+    supplierId,
     errorHref: `/purchase-orders/${id}/edit`,
   });
 
