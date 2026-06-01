@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { headers } from "next/headers";
 
 import { CopyPoMessageButton } from "@/components/vento/purchase-orders/copy-po-message-button";
 import {
@@ -87,6 +88,13 @@ export default async function PurchaseOrderDetailPage({
   const sp = (await searchParams) ?? {};
   const errorMsg = sp.error;
 
+  const headersList = await headers();
+  const host = headersList.get("x-forwarded-host") ?? headersList.get("host") ?? "";
+  const proto = headersList.get("x-forwarded-proto") ?? "https";
+  const appOrigin =
+    process.env.NEXT_PUBLIC_ORIGO_URL?.replace(/\/$/, "") ||
+    (host ? `${proto}://${host}` : "https://origo.ventogroup.co");
+
   const { data: po, error } = await supabase
     .from("purchase_orders")
     .select(
@@ -145,6 +153,7 @@ export default async function PurchaseOrderDetailPage({
   const pdfPath = `/purchase-orders/${encodeURIComponent(order.id)}/pdf`;
   const pdfToken = createPurchaseOrderPdfToken(order.id);
   const pdfPathWithToken = `${pdfPath}?t=${encodeURIComponent(pdfToken)}`;
+  const pdfUrlWithToken = new URL(pdfPathWithToken, appOrigin).toString();
 
   const supplierLines = lineItems.map((item, index) => {
     const opQty = Number(item.quantity_ordered ?? 0);
@@ -162,6 +171,8 @@ export default async function PurchaseOrderDetailPage({
     "Productos solicitados:",
     ...(supplierLines.length ? supplierLines : ["- Sin lineas registradas."]),
     ...(order.notes ? ["", `Notas: ${order.notes}`] : []),
+    "",
+    `PDF de la solicitud: ${pdfUrlWithToken}`,
     "",
     "Quedamos atentos a tu confirmacion. Gracias.",
   ].join("\n");
@@ -188,8 +199,8 @@ export default async function PurchaseOrderDetailPage({
                 <h1 className="ui-h1">{orderRef}</h1>
                 <p className="max-w-3xl text-sm leading-6 text-[var(--ui-muted)]">
                   Solicitud de compra para <strong className="text-[var(--ui-text)]">{supplierName}</strong>,
-                  destino <strong className="text-[var(--ui-text)]">{siteName}</strong>. La comunicacion al proveedor
-                  no incluye costos; los valores quedan solo como referencia interna y se ajustan al recibir.
+                  destino <strong className="text-[var(--ui-text)]">{siteName}</strong>. Desde aquí puedes copiar
+                  el mensaje con el PDF público para el proveedor y gestionar la orden internamente.
                 </p>
               </div>
             </div>
@@ -257,7 +268,7 @@ export default async function PurchaseOrderDetailPage({
                 <div>
                   <div className="text-sm font-bold text-[var(--ui-text)]">Enviar al proveedor</div>
                   <p className="mt-1 text-xs leading-5 text-[var(--ui-muted)]">
-                    Copia una solicitud limpia: productos, cantidades, sede y fecha. No incluye costos ni enlaces privados.
+                    Copia la solicitud con productos, cantidades, sede, fecha y link público del PDF para proveedor.
                   </p>
                 </div>
                 <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-800">
@@ -273,13 +284,10 @@ export default async function PurchaseOrderDetailPage({
                   rel="noopener noreferrer"
                   className="ui-btn ui-btn--ghost w-full whitespace-nowrap"
                 >
-                  Abrir PDF actual
+                  Abrir PDF proveedor
                 </a>
               </div>
 
-              <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-950">
-                El PDF actual todavia debe separarse en version proveedor sin costos y version interna. El mensaje copiado ya no manda link privado.
-              </div>
             </div>
 
             <div className="rounded-[1.5rem] border border-[var(--ui-border)] bg-white p-4 shadow-sm">

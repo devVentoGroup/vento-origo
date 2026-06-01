@@ -300,30 +300,6 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
     cursorTop = 142;
   };
 
-  const drawSupplierNotice = () => {
-    const notice =
-      "Documento para proveedor. Esta solicitud no incluye precios ni costos internos. Los valores finales se validan al recibir factura o remision.";
-    const lines = wrapText(notice, CONTENT_WIDTH - 24, 10);
-    const boxHeight = 24 + lines.length * 12;
-
-    ensureSpace(boxHeight + 10);
-    rect(PAGE_MARGIN, cursorTop, CONTENT_WIDTH, boxHeight, "f", softColor);
-    rect(PAGE_MARGIN, cursorTop, CONTENT_WIDTH, boxHeight, "S", borderColor);
-
-    lines.forEach((lineValue, index) => {
-      text({
-        value: lineValue,
-        x: PAGE_MARGIN + 12,
-        top: cursorTop + 18 + index * 12,
-        size: 10,
-        color: textColor,
-        maxWidth: CONTENT_WIDTH - 24,
-      });
-    });
-
-    cursorTop += boxHeight + 16;
-  };
-
   const drawSummary = () => {
     const fields = [
       { label: "Proveedor", value: input.supplierName },
@@ -464,7 +440,6 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
 
   beginPage();
   drawHeader();
-  drawSupplierNotice();
   drawSummary();
   drawItems();
   drawNotes();
