@@ -126,17 +126,13 @@ function formatPresentationLabel(
   return `${presentation.label} · 1 = ${formatQty(Number(presentation.qty_in_stock_unit ?? 0))} ${stockUnitCode}`;
 }
 
-function getSuggestedUnitCost(
-  product: ProductOption | undefined,
-  presentation: ProductPresentationOption | null
-): number {
-  const baseCost = Number(product?.cost ?? 0);
-  const factor = Number(presentation?.qty_in_stock_unit ?? 0);
+function getInternalEstimatedLineTotal(product: ProductOption | undefined, stockQuantity: number): number {
+  const stockUnitCost = Number(product?.cost ?? 0);
 
-  if (!Number.isFinite(baseCost) || baseCost <= 0) return 0;
-  if (!Number.isFinite(factor) || factor <= 0) return baseCost;
+  if (!Number.isFinite(stockUnitCost) || stockUnitCost <= 0) return 0;
+  if (!Number.isFinite(stockQuantity) || stockQuantity <= 0) return 0;
 
-  return Math.round(baseCost * factor * 100) / 100;
+  return Math.round(stockUnitCost * stockQuantity * 100) / 100;
 }
 
 function productLabel(product: ProductOption | undefined) {
@@ -185,7 +181,9 @@ export function PurchaseOrderGuidedForm({
   );
 
   const supplierFilteredProducts = useMemo(() => {
-    if (!supplierId || !productsHaveSupplierLinks) return products;
+    if (!supplierId) return [];
+    if (!productsHaveSupplierLinks) return products;
+
     return products.filter((product) =>
       Array.isArray(product.supplier_ids) && product.supplier_ids.includes(supplierId)
     );
@@ -194,7 +192,7 @@ export function PurchaseOrderGuidedForm({
   const visibleProductsByLine = useMemo(() => {
     return lineRows.map((line) => {
       const query = normalizeSearch(line.product_search);
-      const base = supplierFilteredProducts.length ? supplierFilteredProducts : products;
+      const base = supplierFilteredProducts;
 
       if (!query) return base.slice(0, 12);
 
@@ -205,27 +203,28 @@ export function PurchaseOrderGuidedForm({
         })
         .slice(0, 12);
     });
-  }, [lineRows, products, supplierFilteredProducts]);
+  }, [lineRows, supplierFilteredProducts]);
 
   const lineSummaries = useMemo(() => {
     return lineRows.map((line) => {
       const product = productById.get(line.product_id);
+      const presentations = product?.presentations ?? [];
       const presentation = getPresentationById(product, line.presentation_id);
       const quantity = toNum(line.quantity) ?? 0;
-      const unitCost = toNum(line.unit_cost) ?? 0;
-      const conversionFactor = Number(presentation?.qty_in_stock_unit ?? 0);
+      const conversionFactor = presentation ? Number(presentation.qty_in_stock_unit ?? 0) : 1;
+      const safeConversionFactor = Number.isFinite(conversionFactor) && conversionFactor > 0 ? conversionFactor : 1;
       const stockUnitCode = getStockUnitCode(product);
-      const stockQuantity = quantity > 0 && conversionFactor > 0 ? quantity * conversionFactor : 0;
-      const stockUnitCost = unitCost > 0 && conversionFactor > 0 ? unitCost / conversionFactor : 0;
-      const total = quantity > 0 && unitCost > 0 ? quantity * unitCost : 0;
-      const isValid = Boolean(line.product_id) && Boolean(line.presentation_id) && quantity > 0;
+      const stockQuantity = quantity > 0 ? quantity * safeConversionFactor : 0;
+      const stockUnitCost = Number(product?.cost ?? 0);
+      const total = getInternalEstimatedLineTotal(product, stockQuantity);
+      const presentationRequired = presentations.length > 0;
+      const isValid = Boolean(product) && quantity > 0 && (!presentationRequired || Boolean(presentation));
 
       return {
         product,
         presentation,
         quantity,
-        unitCost,
-        conversionFactor,
+        conversionFactor: safeConversionFactor,
         stockUnitCode,
         stockQuantity,
         stockUnitCost,
@@ -253,14 +252,13 @@ export function PurchaseOrderGuidedForm({
 
   const selectProduct = (index: number, product: ProductOption) => {
     const presentation = getDefaultPresentation(product);
-    const suggestedCost = getSuggestedUnitCost(product, presentation);
 
     updateLine(index, {
       product_id: product.id,
       product_search: productLabel(product),
       presentation_id: presentation?.id ?? "",
-      unit: presentation?.label ?? "",
-      unit_cost: lineRows[index]?.unit_cost || (suggestedCost > 0 ? String(suggestedCost) : ""),
+      unit: presentation?.label ?? getStockUnitCode(product),
+      unit_cost: "",
     });
     setActiveProductPickerIndex(null);
   };
@@ -269,12 +267,11 @@ export function PurchaseOrderGuidedForm({
     const current = lineRows[index];
     const product = productById.get(current.product_id);
     const presentation = getPresentationById(product, presentationId);
-    const suggestedCost = getSuggestedUnitCost(product, presentation);
 
     updateLine(index, {
       presentation_id: presentation?.id ?? "",
-      unit: presentation?.label ?? "",
-      unit_cost: current.unit_cost || (suggestedCost > 0 ? String(suggestedCost) : ""),
+      unit: presentation?.label ?? getStockUnitCode(product),
+      unit_cost: "",
     });
   };
 
@@ -285,15 +282,21 @@ export function PurchaseOrderGuidedForm({
       <input type="hidden" name="expected_at" value={expectedAt} />
       <input type="hidden" name="notes" value={notes} />
 
-      {lineRows.map((row, index) => (
-        <div key={`line-hidden-${index}`} className="hidden">
-          <input type="hidden" name="item_product_id" value={row.product_id} />
-          <input type="hidden" name="item_presentation_id" value={row.presentation_id} />
-          <input type="hidden" name="item_quantity" value={row.quantity} />
-          <input type="hidden" name="item_unit_cost" value={row.unit_cost} />
-          <input type="hidden" name="item_unit" value={row.unit} />
-        </div>
-      ))}
+      {lineRows.map((row, index) => {
+        const product = productById.get(row.product_id);
+        const presentation = getPresentationById(product, row.presentation_id);
+        const unitValue = row.unit || presentation?.label || (row.product_id ? getStockUnitCode(product) : "");
+
+        return (
+          <div key={`line-hidden-${index}`} className="hidden">
+            <input type="hidden" name="item_product_id" value={row.product_id} />
+            <input type="hidden" name="item_presentation_id" value={row.presentation_id} />
+            <input type="hidden" name="item_quantity" value={row.quantity} />
+            <input type="hidden" name="item_unit_cost" value="" />
+            <input type="hidden" name="item_unit" value={unitValue} />
+          </div>
+        );
+      })}
 
       <div className="space-y-5">
         <section className="rounded-[1.75rem] border border-[var(--ui-border)] bg-white p-5 shadow-sm">
@@ -304,8 +307,8 @@ export function PurchaseOrderGuidedForm({
                 {mode === "edit" ? "Editar orden de compra" : "Nueva orden de compra"}
               </h2>
               <p className="mt-1 max-w-3xl text-sm leading-6 text-[var(--ui-muted)]">
-                Crea la OC como un documento: proveedor, sede, líneas de compra, presentación física,
-                precio sugerido y total estimado. Sin pasos rígidos.
+                Crea la OC como solicitud operativa: proveedor, sede, líneas de compra,
+                presentación física y cantidades. Los costos no se envían al proveedor.
               </p>
             </div>
 
@@ -322,6 +325,16 @@ export function PurchaseOrderGuidedForm({
                 onChange={(event) => {
                   setSupplierId(event.target.value);
                   setActiveProductPickerIndex(null);
+                  setLineRows((current) =>
+                    current.map((row) => ({
+                      ...row,
+                      product_id: "",
+                      presentation_id: "",
+                      unit: "",
+                      unit_cost: "",
+                      product_search: "",
+                    }))
+                  );
                 }}
                 className="ui-input"
                 required
@@ -334,7 +347,7 @@ export function PurchaseOrderGuidedForm({
                 ))}
               </select>
               <span className="text-xs text-[var(--ui-muted)]">
-                Al seleccionar proveedor, ORIGO prioriza los insumos asociados a ese proveedor.
+                Al seleccionar proveedor, ORIGO muestra solo los insumos asociados a ese proveedor.
               </span>
             </label>
 
@@ -381,8 +394,8 @@ export function PurchaseOrderGuidedForm({
             <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
               <div className="font-semibold">Catálogo proveedor-producto pendiente</div>
               <p className="mt-1">
-                La pantalla ya está preparada para filtrar por proveedor. Si no existen vínculos en
-                product_suppliers, mostrará el catálogo completo hasta que se creen esas relaciones.
+                La pantalla filtra por proveedor cuando existen vínculos en product_suppliers.
+                Si aún no hay vínculos cargados, ORIGO permitirá buscar en el catálogo completo de forma temporal.
               </p>
             </div>
           ) : null}
@@ -393,7 +406,7 @@ export function PurchaseOrderGuidedForm({
             <div>
               <h3 className="text-lg font-bold text-[var(--ui-text)]">Líneas de compra</h3>
               <p className="mt-1 text-sm text-[var(--ui-muted)]">
-                Selecciona insumos, presentación de compra, cantidad y costo por presentación.
+                Selecciona insumos del proveedor, presentación de compra y cantidad solicitada.
               </p>
             </div>
 
@@ -433,7 +446,7 @@ export function PurchaseOrderGuidedForm({
                     </button>
                   </div>
 
-                  <div className="mt-4 grid gap-4 2xl:grid-cols-[minmax(260px,1.3fr)_minmax(260px,1fr)_minmax(220px,0.8fr)]">
+                  <div className="mt-4 grid gap-4 2xl:grid-cols-[minmax(280px,1.2fr)_minmax(320px,1fr)]">
                     <div className="rounded-2xl border border-[var(--ui-border)] bg-white p-4">
                       <div className="text-sm font-bold text-[var(--ui-text)]">Insumo</div>
                       <div className="mt-1 text-xs text-[var(--ui-muted)]">
@@ -489,7 +502,11 @@ export function PurchaseOrderGuidedForm({
 
                             {!visibleProducts.length ? (
                               <div className="rounded-2xl border border-dashed border-[var(--ui-border)] p-4 text-sm text-[var(--ui-muted)]">
-                                No encontramos ese insumo. Luego conectamos creación rápida desde este punto.
+                                {!supplierId
+                                  ? "Selecciona primero un proveedor para cargar sus insumos."
+                                  : productsHaveSupplierLinks
+                                    ? "Este proveedor no tiene insumos asociados o no hay coincidencias con la búsqueda."
+                                    : "No encontramos ese insumo. Luego conectamos creación rápida desde este punto."}
                               </div>
                             ) : null}
                           </div>
@@ -504,46 +521,40 @@ export function PurchaseOrderGuidedForm({
                       </div>
 
                       <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                        <label className="sm:col-span-2">
+                        <div className="sm:col-span-2">
                           <span className="ui-label">Presentación</span>
-                          <select
-                            value={line.presentation_id}
-                            onChange={(event) => handlePresentationChange(index, event.target.value)}
-                            className="ui-input mt-1"
-                            disabled={!line.product_id || presentations.length === 0}
-                            required
-                          >
-                            <option value="">
-                              {line.product_id ? "Seleccionar presentación" : "Primero selecciona producto"}
-                            </option>
-                            {presentations.map((presentation) => (
-                              <option key={presentation.id} value={presentation.id}>
-                                {formatPresentationLabel(presentation, summary.stockUnitCode)}
+                          {line.product_id && presentations.length === 0 ? (
+                            <div className="mt-1 rounded-[var(--ui-radius-control)] border border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-4 py-3 text-sm font-semibold text-[var(--ui-text)]">
+                              Sin presentación aprobada · pedir por unidad stock ({summary.stockUnitCode})
+                            </div>
+                          ) : (
+                            <select
+                              value={line.presentation_id}
+                              onChange={(event) => handlePresentationChange(index, event.target.value)}
+                              className="ui-input mt-1"
+                              disabled={!line.product_id}
+                              required={presentations.length > 0}
+                            >
+                              <option value="">
+                                {line.product_id ? "Seleccionar presentación" : "Primero selecciona producto"}
                               </option>
-                            ))}
-                          </select>
-                        </label>
+                              {presentations.map((presentation) => (
+                                <option key={presentation.id} value={presentation.id}>
+                                  {formatPresentationLabel(presentation, summary.stockUnitCode)}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                        </div>
 
                         <label>
-                          <span className="ui-label">Cantidad</span>
+                          <span className="ui-label">Cantidad solicitada</span>
                           <input
                             type="number"
                             min="0"
                             step="any"
                             value={line.quantity}
                             onChange={(event) => updateLine(index, { quantity: event.target.value })}
-                            className="ui-input mt-1"
-                          />
-                        </label>
-
-                        <label>
-                          <span className="ui-label">Costo unitario</span>
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={line.unit_cost}
-                            onChange={(event) => updateLine(index, { unit_cost: event.target.value })}
                             className="ui-input mt-1"
                           />
                         </label>
@@ -559,36 +570,27 @@ export function PurchaseOrderGuidedForm({
                               {formatQty(summary.quantity)} presentación(es) ={" "}
                               {formatQty(summary.stockQuantity)} {summary.stockUnitCode}
                             </div>
+                          </>
+                        ) : line.product_id && presentations.length === 0 ? (
+                          <>
+                            <div className="font-semibold text-[var(--ui-text)]">
+                              Unidad stock: {summary.stockUnitCode}
+                            </div>
                             <div className="mt-1">
-                              Costo base: {formatAmount(summary.stockUnitCost)} / {summary.stockUnitCode}
+                              {formatQty(summary.quantity)} {summary.stockUnitCode} solicitados.
+                            </div>
+                            <div className="mt-1">
+                              Crea presentaciones en catálogo cuando necesites pedir por caja, bolsa, paquete u otra unidad física.
                             </div>
                           </>
                         ) : line.product_id ? (
                           "Selecciona una presentación física aprobada para calcular equivalencias."
                         ) : (
-                          "Completa producto, presentación, cantidad y costo para ver equivalencias."
+                          "Completa producto, presentación y cantidad para ver equivalencias."
                         )}
                       </div>
                     </div>
 
-                    <div className="rounded-2xl border border-[var(--ui-border)] bg-white p-4">
-                      <div className="text-sm font-bold text-[var(--ui-text)]">Total línea</div>
-                      <div className="mt-1 text-xs text-[var(--ui-muted)]">
-                        Estimado antes de recepción real.
-                      </div>
-
-                      <div className="mt-4 text-2xl font-bold text-[var(--ui-text)]">
-                        {formatAmount(summary.total)}
-                      </div>
-
-                      <div className="mt-3 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3 text-xs text-[var(--ui-muted)]">
-                        {summary.isValid ? (
-                          <span className="font-semibold text-emerald-700">Línea lista para guardar.</span>
-                        ) : (
-                          <span>Falta producto, presentación o cantidad.</span>
-                        )}
-                      </div>
-                    </div>
                   </div>
                 </div>
               );
@@ -599,9 +601,9 @@ export function PurchaseOrderGuidedForm({
 
       <aside className="xl:sticky xl:top-4 xl:self-start">
         <div className="rounded-[1.75rem] border border-[var(--ui-border)] bg-white p-5 shadow-sm">
-          <div className="text-lg font-bold text-[var(--ui-text)]">Resumen de OC</div>
+          <div className="text-lg font-bold text-[var(--ui-text)]">Resumen interno de OC</div>
           <p className="mt-1 text-sm text-[var(--ui-muted)]">
-            Revisa proveedor, sede, líneas y total antes de guardar.
+            Revisa proveedor, sede y líneas antes de guardar. El estimado interno no se envía al proveedor.
           </p>
 
           <div className="mt-4 space-y-3">
@@ -632,9 +634,12 @@ export function PurchaseOrderGuidedForm({
             </div>
 
             <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3">
-              <div className="text-xs font-semibold uppercase tracking-wide text-[var(--ui-muted)]">Total estimado</div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-[var(--ui-muted)]">Estimado interno</div>
               <div className="mt-1 text-2xl font-bold text-[var(--ui-text)]">
                 {formatAmount(summaryTotal)}
+              </div>
+              <div className="mt-1 text-xs leading-5 text-[var(--ui-muted)]">
+                Referencia contable local. El costo real se define al recibir la factura/remisión del proveedor.
               </div>
             </div>
 

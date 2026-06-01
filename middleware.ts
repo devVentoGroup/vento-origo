@@ -52,13 +52,18 @@ function withDebugHeaders(
   return response;
 }
 
+function isPublicPurchaseOrderPdfPath(pathname: string) {
+  // The route handler validates the signed token (?t=...) and still protects
+  // internal PDF access when the token is missing or invalid.
+  return /^\/purchase-orders\/[^/]+\/pdf\/?$/.test(pathname);
+}
+
 export const config = {
   matcher: ["/((?!_next|login|no-access|favicon.ico|logos|images|fonts|api).*)"],
 };
 
 export async function middleware(request: NextRequest) {
-  if (/^\/purchase-orders\/[^/]+\/pdf$/.test(request.nextUrl.pathname)) {
-    // Public PDF route validates access via signed token in the route handler.
+  if (isPublicPurchaseOrderPdfPath(request.nextUrl.pathname)) {
     return NextResponse.next();
   }
 
