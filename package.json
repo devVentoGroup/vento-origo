@@ -6,7 +6,9 @@
     "dev": "next dev --port 3001",
     "build": "next build",
     "start": "next start --port 3001",
-    "lint": "eslint"
+    "lint": "eslint",
+    "sync:navigation": "node scripts/sync-navigation.mjs",
+    "prebuild": "node scripts/sync-navigation.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.8.0",
