@@ -341,6 +341,23 @@ function roundQuantity(value: number, decimals = 6): number {
   return Math.round(value * scale) / scale;
 }
 
+function presentationDedupeKey(params: {
+  label: string;
+  inputUnitCode: string;
+  factor: number;
+}): string {
+  return [
+    params.label
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .trim(),
+    params.inputUnitCode.toLowerCase().trim(),
+    String(roundQuantity(params.factor, 6)),
+  ].join("|");
+}
+
 function computeWeightedAverageCost(params: {
   currentQty: number;
   currentUnitCost: number;
@@ -494,18 +511,6 @@ async function createReceipt(formData: FormData) {
   const poItemIds = formData
     .getAll("item_purchase_order_item_id")
     .map((value) => String(value).trim());
-  const inputUnitCodes = formData
-    .getAll("item_input_unit_code")
-    .map((value) => String(value).trim().toLowerCase());
-  const inputUnitLabels = formData
-    .getAll("item_input_unit_label")
-    .map((value) => String(value).trim());
-  const conversionFactorsToStock = formData
-    .getAll("item_conversion_factor_to_stock")
-    .map((value) => asNumber(String(value).trim()));
-  const stockUnitCodesFromForm = formData
-    .getAll("item_stock_unit_code")
-    .map((value) => String(value).trim().toLowerCase());
   const lineNotes = formData.getAll("item_notes").map((value) => String(value).trim());
   const lotNumbers = formData.getAll("item_lot_number").map((value) => String(value).trim());
   const expiryDates = formData.getAll("item_expiry_date").map((value) => String(value).trim());
@@ -572,6 +577,25 @@ async function createReceipt(formData: FormData) {
     );
   }
 
+  const selectedPresentationIds = Array.from(new Set(inputUomProfileIds.filter(Boolean)));
+  const { data: selectedPresentationRowsData, error: selectedPresentationRowsErr } =
+    selectedPresentationIds.length > 0
+      ? await supabase
+        .from("product_uom_profiles")
+        .select("id,product_id,label,input_unit_code,qty_in_stock_unit")
+        .in("id", selectedPresentationIds)
+        .eq("is_active", true)
+        .eq("source", "manual")
+      : { data: [] as ProductUomProfileRow[], error: null };
+
+  if (selectedPresentationRowsErr) {
+    redirect("/receipts?error=" + encodeURIComponent(selectedPresentationRowsErr.message));
+  }
+
+  const selectedPresentationById = new Map(
+    ((selectedPresentationRowsData ?? []) as ProductUomProfileRow[]).map((row) => [row.id, row])
+  );
+
   const items = productIds
     .map((productId, index) => {
       if (!productId) return null;
@@ -593,23 +617,37 @@ async function createReceipt(formData: FormData) {
         }
       }
 
+      const selectedPresentationId = inputUomProfileIds[index] || "";
+      const selectedPresentation = selectedPresentationId
+        ? selectedPresentationById.get(selectedPresentationId)
+        : null;
+
+      if (!purchaseOrderId) {
+        if (!selectedPresentation || selectedPresentation.product_id !== productId) {
+          redirect(
+            "/receipts?error=" +
+            encodeURIComponent("Selecciona una presentacion manual activa para cada item recibido.")
+          );
+        }
+      }
+
       const fallbackStockUnitCode = String(product?.stock_unit_code ?? product?.unit ?? "un").trim().toLowerCase();
 
       const stockUnitCode = purchaseOrderId
         ? String(poItem?.stock_unit_code ?? poItem?.input_unit_code ?? fallbackStockUnitCode).trim().toLowerCase()
-        : stockUnitCodesFromForm[index] || fallbackStockUnitCode || "un";
+        : fallbackStockUnitCode || "un";
 
       const inputUnitCode = purchaseOrderId
         ? String(poItem?.input_unit_code ?? stockUnitCode).trim().toLowerCase()
-        : inputUnitCodes[index] || stockUnitCode;
+        : String(selectedPresentation?.input_unit_code ?? stockUnitCode).trim().toLowerCase();
 
       const inputUnitLabel = purchaseOrderId
         ? String(poItem?.input_unit_label ?? poItem?.unit ?? inputUnitCode).trim()
-        : inputUnitLabels[index] || inputUnitCode;
+        : String(selectedPresentation?.label ?? inputUnitCode).trim();
 
       const conversionFactorToStockRaw = purchaseOrderId
         ? Number(poItem?.conversion_factor_to_stock ?? 0)
-        : Number(conversionFactorsToStock[index] ?? 0);
+        : Number(selectedPresentation?.qty_in_stock_unit ?? 0);
 
       const conversionFactorToStock =
         Number.isFinite(conversionFactorToStockRaw) && conversionFactorToStockRaw > 0
@@ -1158,6 +1196,7 @@ export default async function ReceiptsPage({
             .select("id,product_id,label,input_unit_code,qty_in_stock_unit")
             .in("product_id", productIdsForCatalog)
             .eq("is_active", true)
+            .eq("source", "manual")
             .order("label", { ascending: true }),
           supabase
             .from("procurement_supplier_product_costs")
@@ -1192,12 +1231,19 @@ export default async function ReceiptsPage({
   }
 
   const presentationsByProductId = new Map<string, ProductPresentationOption[]>();
+  const presentationKeysByProductId = new Map<string, Set<string>>();
   for (const row of (productUomProfilesData ?? []) as ProductUomProfileRow[]) {
     const factor = Number(row.qty_in_stock_unit ?? 0);
     if (!row.product_id || factor <= 0) continue;
 
     const label = String(row.label ?? row.input_unit_code ?? "Presentación").trim();
     const inputUnitCode = String(row.input_unit_code ?? label).trim().toLowerCase();
+    const dedupeKey = presentationDedupeKey({ label, inputUnitCode, factor });
+    const knownKeys = presentationKeysByProductId.get(row.product_id) ?? new Set<string>();
+    if (knownKeys.has(dedupeKey)) continue;
+    knownKeys.add(dedupeKey);
+    presentationKeysByProductId.set(row.product_id, knownKeys);
+
     const key = [row.product_id, row.id, inputUnitCode, factor].join("|");
     const cost = costsByPresentationKey.get(key);
 
@@ -1366,6 +1412,7 @@ export default async function ReceiptsPage({
         .select("id,product_id,label,input_unit_code,qty_in_stock_unit")
         .in("product_id", missingPrefillProductIds)
         .eq("is_active", true)
+        .eq("source", "manual")
         .order("label", { ascending: true }),
       supabase
         .from("procurement_supplier_product_costs")
@@ -1403,12 +1450,19 @@ export default async function ReceiptsPage({
     }
 
     const missingPresentationsByProductId = new Map<string, ProductPresentationOption[]>();
+    const missingPresentationKeysByProductId = new Map<string, Set<string>>();
     for (const row of (missingProductUomProfilesData ?? []) as ProductUomProfileRow[]) {
       const factor = Number(row.qty_in_stock_unit ?? 0);
       if (!row.product_id || factor <= 0) continue;
 
       const label = String(row.label ?? row.input_unit_code ?? "Presentación").trim();
       const inputUnitCode = String(row.input_unit_code ?? label).trim().toLowerCase();
+      const dedupeKey = presentationDedupeKey({ label, inputUnitCode, factor });
+      const knownKeys = missingPresentationKeysByProductId.get(row.product_id) ?? new Set<string>();
+      if (knownKeys.has(dedupeKey)) continue;
+      knownKeys.add(dedupeKey);
+      missingPresentationKeysByProductId.set(row.product_id, knownKeys);
+
       const key = [row.product_id, row.id, inputUnitCode, factor].join("|");
       const cost = missingCostsByPresentationKey.get(key);
 

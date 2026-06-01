@@ -339,9 +339,35 @@ function getProductStockUnitCode(product: ProductRow | undefined): string {
   return String(product?.stock_unit_code ?? product?.unit ?? "un").trim().toLowerCase() || "un";
 }
 
-function getDefaultPresentation(product: ProductRow | undefined): ProductPresentationOption | null {
-  const presentations = product?.presentations ?? [];
-  return presentations.find((presentation) => presentation.is_default) ?? presentations[0] ?? null;
+function getUniquePresentations(
+  presentations: ProductPresentationOption[] | null | undefined
+): ProductPresentationOption[] {
+  const unique: ProductPresentationOption[] = [];
+  const seen = new Set<string>();
+
+  for (const presentation of presentations ?? []) {
+    const factor = Number(presentation.qty_in_stock_unit ?? 0);
+    if (!presentation.id || !Number.isFinite(factor) || factor <= 0) continue;
+
+    const label = String(presentation.label ?? presentation.input_unit_code ?? "Presentación").trim();
+    const inputUnitCode = String(presentation.input_unit_code ?? label).trim().toLowerCase();
+    const key = [
+      label
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/\s+/g, " ")
+        .trim(),
+      inputUnitCode,
+      String(Math.round(factor * 1000000) / 1000000),
+    ].join("|");
+
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(presentation);
+  }
+
+  return unique;
 }
 
 function getPresentationSuggestedUnitCost(
@@ -733,23 +759,16 @@ export function ReceiptForm({
 
   const selectProduct = (index: number, product: ProductRow) => {
     const stockUnitCode = getProductStockUnitCode(product);
-    const defaultPresentation = getDefaultPresentation(product);
-    const factor = Number(defaultPresentation?.qty_in_stock_unit ?? 0) > 0
-      ? Number(defaultPresentation?.qty_in_stock_unit)
-      : 1;
-    const inputUnitLabel = defaultPresentation?.label ?? stockUnitCode;
-    const inputUnitCode = (defaultPresentation?.input_unit_code ?? normalizeUnitCode(inputUnitLabel)) || stockUnitCode;
-    const suggestedUnitCost = getPresentationSuggestedUnitCost(product, defaultPresentation, factor);
 
     updateLine(index, {
       productId: product.id,
       productSearch: formatProductOptionLabel(product),
-      presentationId: defaultPresentation?.id ?? "",
-      inputUnitCode,
-      inputUnitLabel,
-      conversionFactorToStock: String(factor),
+      presentationId: "",
+      inputUnitCode: "",
+      inputUnitLabel: "",
+      conversionFactorToStock: "1",
       stockUnitCode,
-      unitCost: lines[index]?.unitCost || formatUnitCostForInput(suggestedUnitCost),
+      unitCost: lines[index]?.unitCost || "",
     });
     setActiveProductPickerIndex(null);
   };
@@ -844,14 +863,8 @@ export function ReceiptForm({
         return;
       }
 
-      updateLine(requestDraft.lineIndex, {
-        presentationId: "",
-        inputUnitLabel: requestDraft.inputUnitLabel.trim() || requestedLabel,
-        inputUnitCode: computeRequestInputUnitCode(requestDraft),
-        conversionFactorToStock: requestDraft.conversionFactorToStock,
-        stockUnitCode: requestDraft.stockUnitCode || getProductStockUnitCode(product),
-        unitCost: line.unitCost || requestDraft.unitCost,
-      });
+      // La solicitud queda pendiente para maestro de datos. No se usa como presentación
+      // real de recepción hasta que exista como presentación manual activa en catálogo.
     }
 
     if (requestDraft.kind === "new_product" && line) {
@@ -915,9 +928,9 @@ export function ReceiptForm({
     const hasAtLeastOneValidLine = lines.some((line) => {
       const qty = Number(line.quantity || 0);
       const factor = Number(line.conversionFactorToStock || 0);
-      const hasPresentationSnapshot =
-        isDirectReceipt ||
-        (Boolean(line.purchaseOrderItemId) && Boolean(line.inputUnitLabel) && factor > 0);
+      const hasPresentationSnapshot = isDirectReceipt
+        ? Boolean(line.presentationId) && Boolean(line.inputUnitLabel) && factor > 0
+        : Boolean(line.purchaseOrderItemId) && Boolean(line.inputUnitLabel) && factor > 0;
 
       return Boolean(line.productId) && hasPresentationSnapshot && Number.isFinite(qty) && qty > 0;
     });
@@ -938,6 +951,10 @@ export function ReceiptForm({
       if (!line.locationId) nextErrors[`line_${index}_locationId`] = "Selecciona LOC.";
       if (!line.inputUnitLabel.trim() || !Number.isFinite(factor) || factor <= 0) {
         nextErrors[`line_${index}_presentation`] = "Define una presentación válida.";
+      }
+
+      if (isDirectReceipt && !line.presentationId) {
+        nextErrors[`line_${index}_presentation`] = "Selecciona una presentación manual activa.";
       }
 
       if (isPurchaseOrderReceipt && !line.purchaseOrderItemId) {
@@ -1174,7 +1191,7 @@ export function ReceiptForm({
               });
               const linePositions = positionsByLocationId.get(line.locationId) ?? [];
               const hasInternalPositions = linePositions.length > 0;
-              const productPresentations = product?.presentations ?? [];
+              const productPresentations = getUniquePresentations(product?.presentations);
 
               return (
                 <div key={`line-${index}`} className="rounded-[1.5rem] border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-4">
@@ -1324,6 +1341,13 @@ export function ReceiptForm({
                       </div>
 
                       <div className="mt-3 grid gap-3">
+                        {!isPurchaseOrderReceipt && product && productPresentations.length === 0 ? (
+                          <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-950">
+                            Este insumo no tiene presentaciones manuales activas. Solicita una nueva presentación
+                            para revisión de maestro de datos antes de registrarlo.
+                          </div>
+                        ) : null}
+
                         {productPresentations.length > 0 && !isPurchaseOrderReceipt ? (
                           <label>
                             <span className="ui-label">Presentación existente</span>
@@ -1333,7 +1357,12 @@ export function ReceiptForm({
                               onChange={(e) => {
                                 const presentation = productPresentations.find((row) => row.id === e.target.value);
                                 if (!presentation) {
-                                  updateLine(index, { presentationId: "" });
+                                  updateLine(index, {
+                                    presentationId: "",
+                                    inputUnitCode: "",
+                                    inputUnitLabel: "",
+                                    conversionFactorToStock: "1",
+                                  });
                                   return;
                                 }
 
@@ -1349,7 +1378,7 @@ export function ReceiptForm({
                                 });
                               }}
                             >
-                              <option value="">Manual / nueva presentación</option>
+                              <option value="">Seleccionar presentación manual</option>
                               {productPresentations.map((presentation) => (
                                 <option key={presentation.id} value={presentation.id}>
                                   {presentation.label} · 1 = {formatQty(Number(presentation.qty_in_stock_unit ?? 0))} {stockUnitCode}
@@ -1366,7 +1395,7 @@ export function ReceiptForm({
                               className="ui-input mt-1"
                               placeholder="Ej: Caja x 12"
                               value={inputUnitLabel}
-                              disabled={isPurchaseOrderReceipt}
+                              disabled
                               onChange={(e) => updateManualPresentation(index, e.target.value)}
                             />
                           </label>
@@ -1379,7 +1408,7 @@ export function ReceiptForm({
                               step="0.000001"
                               min="0.000001"
                               value={line.conversionFactorToStock}
-                              disabled={isPurchaseOrderReceipt}
+                              disabled
                               onChange={(e) => updateLine(index, { conversionFactorToStock: e.target.value })}
                             />
                           </label>
