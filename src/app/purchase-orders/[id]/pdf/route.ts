@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
+import { createClient as createSupabaseServiceClient } from "@supabase/supabase-js";
 
 import { buildPurchaseOrderPdf } from "@/lib/purchase-orders/pdf";
 import { formatPurchaseOrderRef } from "@/lib/purchase-orders/reference";
@@ -10,6 +11,22 @@ import { normalizeQuantityToBase, normalizeUnitCostToBase } from "@/lib/units/no
 
 function sanitizeFilename(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, "-");
+}
+
+function createServiceRoleClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "";
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+
+  if (!url || !key) {
+    throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY or SUPABASE_URL for public purchase order PDF.");
+  }
+
+  return createSupabaseServiceClient(url, key, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  });
 }
 
 async function loadBrandLogoPngBytes(): Promise<Uint8Array | null> {
@@ -475,24 +492,26 @@ export async function GET(
   const requestUrl = new URL(req.url);
   const token = requestUrl.searchParams.get("t") ?? "";
   const hasValidToken = verifyPurchaseOrderPdfToken(id, token);
-  const supabase = await createClient();
+  const authSupabase = await createClient();
 
   if (!hasValidToken) {
     const {
       data: { user },
-    } = await supabase.auth.getUser();
+    } = await authSupabase.auth.getUser();
 
     if (!user) {
       return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
     }
 
-    const { data: canAccess, error: accessErr } = await supabase.rpc("has_permission", {
+    const { data: canAccess, error: accessErr } = await authSupabase.rpc("has_permission", {
       p_permission_code: "origo.access",
     });
     if (accessErr || !canAccess) {
       return NextResponse.json({ error: "FORBIDDEN" }, { status: 403 });
     }
   }
+
+  const supabase = hasValidToken ? createServiceRoleClient() : authSupabase;
 
   const { data: po, error: poErr } = await supabase
     .from("purchase_orders")
