@@ -548,7 +548,7 @@ export function ReceiptForm({
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const defaultLocationId = locations[0]?.id ?? "";
+  const defaultLocationId = "";
   const receiptDraftScope = selectedPurchaseOrderId ? `po:${selectedPurchaseOrderId}` : "direct";
   const storageKey = `origo:receipts:form:${siteId}:${receiptDraftScope}`;
   const legacyStorageKey = `origo:receipts:form:${siteId}`;
@@ -1667,6 +1667,11 @@ export function ReceiptForm({
                         onChange={(e) => updateLine(index, { locationId: e.target.value, positionId: "" })}
                       >
                         <option value="">Seleccionar LOC</option>
+                        {locations.length === 0 ? (
+                          <option value="" disabled>
+                            No hay LOC activos para esta sede
+                          </option>
+                        ) : null}
                         {locations.map((location) => (
                           <option key={location.id} value={location.id}>
                             {formatReceiptLocationLabel(location)}
@@ -1678,7 +1683,12 @@ export function ReceiptForm({
                       ) : null}
                     </label>
 
-                    {hasInternalPositions ? (
+                    {!line.locationId ? (
+                      <div className="lg:col-span-2 rounded-2xl border border-[var(--ui-border)] bg-white px-4 py-3 text-xs text-[var(--ui-muted)]">
+                        Selecciona primero un LOC para ver ubicaciones internas.
+                        <input type="hidden" name="item_location_position_id" value="" />
+                      </div>
+                    ) : hasInternalPositions ? (
                       <label className="lg:col-span-2">
                         <span className="ui-label">Ubicación interna</span>
                         <select

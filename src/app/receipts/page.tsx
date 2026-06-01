@@ -756,6 +756,29 @@ async function createReceipt(formData: FormData) {
     redirect("/receipts?error=" + encodeURIComponent("Selecciona una LOC para cada item."));
   }
 
+  const selectedLocationIds = Array.from(new Set(items.map((item) => item.location_id).filter(Boolean)));
+  const { data: selectedLocationRowsData, error: selectedLocationRowsErr } =
+    selectedLocationIds.length > 0
+      ? await supabase
+        .from("inventory_locations")
+        .select("id")
+        .eq("site_id", siteId)
+        .eq("is_active", true)
+        .in("id", selectedLocationIds)
+      : { data: [] as Array<{ id: string }>, error: null };
+
+  if (selectedLocationRowsErr) {
+    redirect("/receipts?error=" + encodeURIComponent(selectedLocationRowsErr.message));
+  }
+
+  const validLocationIds = new Set(
+    ((selectedLocationRowsData ?? []) as Array<{ id: string }>).map((row) => row.id)
+  );
+
+  if (items.some((item) => !validLocationIds.has(item.location_id))) {
+    redirect("/receipts?error=" + encodeURIComponent("Hay un LOC no valido para esta sede."));
+  }
+
   const selectedLocationPositionIds = Array.from(
     new Set(
       items
@@ -1160,9 +1183,8 @@ export default async function ReceiptsPage({
       .select("id,code,zone,description")
       .eq("site_id", siteId)
       .eq("is_active", true)
-      .in("code", OPERATIONAL_RECEIPT_LOCATION_CODES)
       .order("code", { ascending: true })
-      .limit(50),
+      .limit(300),
   ]);
 
   const suppliers = (suppliersData ?? []) as SupplierRow[];
