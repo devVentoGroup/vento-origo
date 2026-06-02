@@ -30,7 +30,7 @@ export default async function NewSupplierPage({
           </Link>
           <h1 className="mt-2 ui-h1">Nuevo proveedor</h1>
           <p className="mt-2 ui-body-muted">
-            Crea el proveedor con un flujo guiado y valida antes de guardar.
+            Crea una ficha comercial con datos de contacto, operación y condiciones de pago.
           </p>
         </div>
       </div>

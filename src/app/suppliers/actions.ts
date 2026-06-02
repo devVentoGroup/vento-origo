@@ -6,6 +6,33 @@ import { redirect } from "next/navigation";
 import { requireCanManageSuppliers } from "@/lib/suppliers";
 import { createClient } from "@/lib/supabase/server";
 
+type SupplierPaymentType = "cash" | "credit";
+
+function optionalText(formData: FormData, key: string): string | null {
+  const value = String(formData.get(key) ?? "").trim();
+  return value.length > 0 ? value : null;
+}
+
+function getSupplierPaymentTerms(formData: FormData): {
+  payment_type: SupplierPaymentType;
+  credit_days: number | null;
+} {
+  const rawPaymentType = String(formData.get("payment_type") ?? "cash").trim();
+  const paymentType: SupplierPaymentType = rawPaymentType === "credit" ? "credit" : "cash";
+
+  const rawCreditDays = String(formData.get("credit_days") ?? "").trim();
+  const parsedCreditDays = Number.parseInt(rawCreditDays, 10);
+  const creditDays =
+    paymentType === "credit" && Number.isFinite(parsedCreditDays) && parsedCreditDays > 0
+      ? parsedCreditDays
+      : null;
+
+  return {
+    payment_type: paymentType,
+    credit_days: creditDays,
+  };
+}
+
 export async function createSupplier(formData: FormData) {
   const supabase = await createClient();
   const { data: authRes } = await supabase.auth.getUser();
@@ -20,16 +47,19 @@ export async function createSupplier(formData: FormData) {
     redirect("/suppliers/new?error=name_required");
   }
 
+  const paymentTerms = getSupplierPaymentTerms(formData);
+
   const { error } = await supabase.from("suppliers").insert({
     name,
-    tax_id: formData.get("tax_id") ? String(formData.get("tax_id")).trim() || null : null,
-    contact_name:
-      formData.get("contact_name") ? String(formData.get("contact_name")).trim() || null : null,
-    phone: formData.get("phone") ? String(formData.get("phone")).trim() || null : null,
-    email: formData.get("email") ? String(formData.get("email")).trim() || null : null,
-    address: formData.get("address") ? String(formData.get("address")).trim() || null : null,
-    notes: formData.get("notes") ? String(formData.get("notes")).trim() || null : null,
+    tax_id: optionalText(formData, "tax_id"),
+    contact_name: optionalText(formData, "contact_name"),
+    phone: optionalText(formData, "phone"),
+    email: optionalText(formData, "email"),
+    address: optionalText(formData, "address"),
+    notes: optionalText(formData, "notes"),
     is_active: formData.getAll("is_active").includes("true"),
+    payment_type: paymentTerms.payment_type,
+    credit_days: paymentTerms.credit_days,
   });
 
   if (error) {
@@ -54,18 +84,21 @@ export async function updateSupplier(id: string, formData: FormData) {
     redirect(`/suppliers/${id}/edit?error=name_required`);
   }
 
+  const paymentTerms = getSupplierPaymentTerms(formData);
+
   const { error } = await supabase
     .from("suppliers")
     .update({
       name,
-      tax_id: formData.get("tax_id") ? String(formData.get("tax_id")).trim() || null : null,
-      contact_name:
-        formData.get("contact_name") ? String(formData.get("contact_name")).trim() || null : null,
-      phone: formData.get("phone") ? String(formData.get("phone")).trim() || null : null,
-      email: formData.get("email") ? String(formData.get("email")).trim() || null : null,
-      address: formData.get("address") ? String(formData.get("address")).trim() || null : null,
-      notes: formData.get("notes") ? String(formData.get("notes")).trim() || null : null,
+      tax_id: optionalText(formData, "tax_id"),
+      contact_name: optionalText(formData, "contact_name"),
+      phone: optionalText(formData, "phone"),
+      email: optionalText(formData, "email"),
+      address: optionalText(formData, "address"),
+      notes: optionalText(formData, "notes"),
       is_active: formData.getAll("is_active").includes("true"),
+      payment_type: paymentTerms.payment_type,
+      credit_days: paymentTerms.credit_days,
       updated_at: new Date().toISOString(),
     })
     .eq("id", id);

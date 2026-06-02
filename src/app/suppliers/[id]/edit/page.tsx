@@ -11,6 +11,13 @@ export const dynamic = "force-dynamic";
 const APP_ID = "origo";
 const RETURN_TO = "/login";
 
+type SupplierPaymentType = "cash" | "credit";
+
+type SupplierWithPaymentTerms = SupplierRow & {
+  payment_type?: SupplierPaymentType | null;
+  credit_days?: number | string | null;
+};
+
 export default async function EditSupplierPage({
   params,
   searchParams,
@@ -26,7 +33,7 @@ export default async function EditSupplierPage({
 
   const { data: row, error } = await supabase
     .from("suppliers")
-    .select("id,name,tax_id,contact_name,phone,email,address,notes,is_active")
+    .select("id,name,tax_id,contact_name,phone,email,address,notes,is_active,payment_type,credit_days")
     .eq("id", id)
     .maybeSingle();
 
@@ -57,7 +64,7 @@ export default async function EditSupplierPage({
     );
   }
 
-  const supplier = row as SupplierRow;
+  const supplier = row as SupplierWithPaymentTerms;
 
   return (
     <div className="w-full space-y-6">
@@ -66,7 +73,10 @@ export default async function EditSupplierPage({
           ← Proveedores
         </Link>
         <h1 className="mt-2 ui-h1">Editar proveedor</h1>
-        <p className="mt-2 ui-body-muted">Modifica los datos de {supplier.name} y guarda en cualquier paso.</p>
+        <p className="mt-2 ui-body-muted">
+          Actualiza la ficha comercial, los datos de contacto y las condiciones de pago de{" "}
+          {supplier.name}.
+        </p>
       </div>
 
       {errorMsg ? (
@@ -88,6 +98,8 @@ export default async function EditSupplierPage({
           address: supplier.address,
           notes: supplier.notes,
           is_active: supplier.is_active,
+          payment_type: supplier.payment_type,
+          credit_days: supplier.credit_days,
         }}
       />
     </div>
