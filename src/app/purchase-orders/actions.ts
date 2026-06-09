@@ -1,4 +1,4 @@
-"use server";
+﻿"use server";
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
@@ -83,7 +83,7 @@ async function buildPurchaseOrderItemsFromForm(params: {
   const requestedProductIds = Array.from(new Set(productIds.filter(Boolean)));
 
   if (!requestedPresentationIds.length && productIds.some(Boolean)) {
-    redirect(`${params.errorHref}?error=${encodeURIComponent("Cada linea debe tener una presentacion aprobada.")}`);
+    redirect(`${params.errorHref}?error=${encodeURIComponent("Cada linea debe tener una presentación aprobada.")}`);
   }
 
   const [
@@ -151,7 +151,7 @@ async function buildPurchaseOrderItemsFromForm(params: {
     if (!productId || qty == null || qty <= 0) continue;
 
     if (!presentationId) {
-      redirect(`${params.errorHref}?error=${encodeURIComponent("Cada linea debe tener una presentacion aprobada.")}`);
+      redirect(`${params.errorHref}?error=${encodeURIComponent("Cada linea debe tener una presentación aprobada.")}`);
     }
 
     const presentation = presentationById.get(presentationId);
@@ -159,7 +159,7 @@ async function buildPurchaseOrderItemsFromForm(params: {
     if (!presentation || presentation.product_id !== productId) {
       redirect(
         `${params.errorHref}?error=${encodeURIComponent(
-          "Hay una presentacion invalida o que no pertenece al producto seleccionado."
+          "Hay una presentación inválida o que no pertenece al producto seleccionado."
         )}`
       );
     }
@@ -189,13 +189,13 @@ async function buildPurchaseOrderItemsFromForm(params: {
     const unitCost = Number(costs[i] ?? 0);
 
     if (!presentationLabel) {
-      redirect(`${params.errorHref}?error=${encodeURIComponent("Hay una presentacion sin nombre valido.")}`);
+      redirect(`${params.errorHref}?error=${encodeURIComponent("Hay una presentación sin nombre valido.")}`);
     }
 
     if (!Number.isFinite(conversionFactorToStock) || conversionFactorToStock <= 0) {
       redirect(
         `${params.errorHref}?error=${encodeURIComponent(
-          `La presentacion "${presentationLabel}" no tiene equivalencia valida.`
+          `La presentación "${presentationLabel}" no tiene equivalencia válida.`
         )}`
       );
     }

@@ -35,7 +35,7 @@ export default async function OrigoPanelPage() {
 
         <Link href="/suppliers" className="ui-panel block transition hover:shadow-lg">
           <div className="ui-h3">Proveedores</div>
-          <p className="mt-1 ui-body-muted">Catalogo y ficha de proveedores con formulario estandar.</p>
+          <p className="mt-1 ui-body-muted">Catálogo y ficha de proveedores con formulario estandar.</p>
           <span className="mt-3 inline-block text-sm font-semibold text-[var(--ui-brand-600)]">Ir a proveedores</span>
         </Link>
       </section>

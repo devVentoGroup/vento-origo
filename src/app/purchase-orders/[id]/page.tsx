@@ -1,4 +1,4 @@
-import Link from "next/link";
+﻿import Link from "next/link";
 import { headers } from "next/headers";
 
 import { CopyPoMessageButton } from "@/components/vento/purchase-orders/copy-po-message-button";
@@ -352,7 +352,7 @@ export default async function PurchaseOrderDetailPage({
 
         {lineItems.length === 0 ? (
           <div className="ui-panel-soft p-4">
-            <p className="ui-body-muted">Sin lineas registradas.</p>
+            <p className="ui-body-muted">Sin líneas registradas.</p>
           </div>
         ) : (
           <Table>

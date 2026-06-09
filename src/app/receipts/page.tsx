@@ -1,4 +1,4 @@
-import Link from "next/link";
+﻿import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { ReceiptForm } from "@/components/vento/receipts/receipt-form";
@@ -234,7 +234,7 @@ function normalizeMasterDataRequestPayloads(formData: FormData): {
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
         return {
           requests: [],
-          errorMessage: "Hay una solicitud de maestro de datos con formato invalido.",
+          errorMessage: "Hay una solicitud de maestro de datos con formato inválido.",
         };
       }
       payload = parsed as MasterDataRequestPayload;
@@ -251,7 +251,7 @@ function normalizeMasterDataRequestPayloads(formData: FormData): {
     if (!kind) {
       return {
         requests: [],
-        errorMessage: "Hay una solicitud de maestro de datos con tipo invalido.",
+        errorMessage: "Hay una solicitud de maestro de datos con tipo inválido.",
       };
     }
 
@@ -278,14 +278,14 @@ function normalizeMasterDataRequestPayloads(formData: FormData): {
       if (!productId) {
         return {
           requests: [],
-          errorMessage: "La solicitud de nueva presentacion debe estar asociada a un producto existente.",
+          errorMessage: "La solicitud de nueva presentación debe estar asociada a un producto existente.",
         };
       }
 
       if (!inputUnitLabel || !stockUnitCode || !conversionFactorToStock) {
         return {
           requests: [],
-          errorMessage: "La solicitud de nueva presentacion debe tener unidad, factor a stock y unidad stock.",
+          errorMessage: "La solicitud de nueva presentación debe tener unidad, factor a stock y unidad stock.",
         };
       }
     }
@@ -457,7 +457,7 @@ async function createReceipt(formData: FormData) {
       redirect(
         "/receipts?error=" +
         encodeURIComponent(
-          "No se pudieron preparar las solicitudes de maestro de datos. Aplica la migracion product_master_review_requests antes de usar esta accion."
+          "No se pudieron preparar las solicitudes de maestro de datos. Aplica la migración product_master_review_requests antes de usar esta acción."
         )
       );
     }
@@ -626,7 +626,7 @@ async function createReceipt(formData: FormData) {
         if (!selectedPresentation || selectedPresentation.product_id !== productId) {
           redirect(
             "/receipts?error=" +
-            encodeURIComponent("Selecciona una presentacion manual activa para cada item recibido.")
+            encodeURIComponent("Selecciona una presentación manual activa para cada item recibido.")
           );
         }
       }
@@ -813,7 +813,7 @@ async function createReceipt(formData: FormData) {
     if (hasInvalidLocationPosition) {
       redirect(
         "/receipts?error=" +
-        encodeURIComponent("Hay una ubicacion interna que no pertenece al LOC seleccionado.")
+        encodeURIComponent("Hay una ubicación interna que no pertenece al LOC seleccionado.")
       );
     }
   }

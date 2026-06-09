@@ -1,4 +1,4 @@
-import { cookies } from "next/headers";
+﻿import { cookies } from "next/headers";
 
 import { checkPermissionWithRoleOverride } from "@/lib/auth/role-override";
 import { createClient } from "@/lib/supabase/server";
@@ -87,7 +87,7 @@ const APP_SWITCHER_ITEMS: Omit<AppSwitcherItem, "access">[] = [
   {
     id: "nexo",
     name: "NEXO",
-    description: "Inventario y logistica.",
+    description: "Inventario y logística.",
     logoSrc: "/apps/nexo.svg",
     brandColor: "#F59E0B",
     href: "https://nexo.ventogroup.co",
@@ -127,7 +127,7 @@ const APP_SWITCHER_ITEMS: Omit<AppSwitcherItem, "access">[] = [
   {
     id: "fogo",
     name: "FOGO",
-    description: "Recetas y produccion.",
+    description: "Recetas y producción.",
     logoSrc: "/apps/fogo.svg",
     brandColor: "#FB7185",
     href: "https://fogo.ventogroup.co",
