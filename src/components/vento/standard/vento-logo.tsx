@@ -7,7 +7,8 @@ type VentoEntity =
   | "pulso"
   | "viso"
   | "origo"
-  | "anima"
+    | "numera"
+    | "anima"
   | "aura";
 
 const ENTITY_COLORS: Record<VentoEntity, string> = {
@@ -17,6 +18,7 @@ const ENTITY_COLORS: Record<VentoEntity, string> = {
   pulso: "#00D4FF",
   viso: "#A855F7",
   origo: "#10B981",
+  numera: "#2563EB",
   anima: "#E2006A",
   aura: "#FF7A59",
 };
@@ -132,7 +134,7 @@ export function VentoLogo({
 }: VentoLogoProps) {
   const resolvedTitle = title ?? "Vento OS";
   const resolvedSubtitle =
-    subtitle ?? (entity === "origo" ? "ORIGO · Compras" : entity.toUpperCase());
+    subtitle ?? (entity === "origo" ? "ORIGO - Compras" : entity.toUpperCase());
 
   return (
     <div className={`flex items-center gap-3 ${className ?? ""}`}>
@@ -150,3 +152,4 @@ export function VentoLogo({
     </div>
   );
 }
+
