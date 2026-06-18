@@ -2,14 +2,6 @@
 import { headers } from "next/headers";
 
 import { CopyPoMessageButton } from "@/components/vento/purchase-orders/copy-po-message-button";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeaderCell,
-  TableRow,
-} from "@/components/vento/standard/table";
 import { requireAppAccess } from "@/lib/auth/guard";
 import { createPurchaseOrderPdfToken } from "@/lib/purchase-orders/public-pdf-token";
 import { formatPurchaseOrderRef } from "@/lib/purchase-orders/reference";
@@ -339,15 +331,15 @@ export default async function PurchaseOrderDetailPage({
         </div>
       </section>
 
-      <section className="ui-panel overflow-x-auto">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+      <section className="ui-panel">
+        <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="ui-h3">Productos solicitados</div>
             <p className="mt-1 text-sm text-[var(--ui-muted)]">
-              Esta es la vista operativa interna. Los costos se muestran solo para control de ORIGO.
+              Vista operativa interna. Las cantidades y costos se muestran separados para evitar lecturas cruzadas.
             </p>
           </div>
-          <span className="ui-chip">{lineItems.length} linea(s)</span>
+          <span className="ui-chip">{lineItems.length} línea(s)</span>
         </div>
 
         {lineItems.length === 0 ? (
@@ -355,55 +347,89 @@ export default async function PurchaseOrderDetailPage({
             <p className="ui-body-muted">Sin líneas registradas.</p>
           </div>
         ) : (
-          <Table>
-            <TableHead>
-              <TableRow>
-                <TableHeaderCell>Producto</TableHeaderCell>
-                <TableHeaderCell className="text-right">Pedido</TableHeaderCell>
-                <TableHeaderCell className="text-right">Base</TableHeaderCell>
-                <TableHeaderCell className="text-right">Recibido</TableHeaderCell>
-                <TableHeaderCell className="text-right">Costo op.</TableHeaderCell>
-                <TableHeaderCell className="text-right">Costo base</TableHeaderCell>
-                <TableHeaderCell className="text-right">Total interno</TableHeaderCell>
-                <TableHeaderCell>Unidad</TableHeaderCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {lineItems.map((item) => {
-                const productLabel = getProductLabel(item);
-                const opQty = Number(item.quantity_ordered ?? 0);
-                const opCost = Number(item.unit_cost ?? 0);
-                const unitCode = String(item.unit ?? "u");
-                const normalizedQty = normalizeQuantityToBase({ quantity: opQty, unit: unitCode });
-                const normalizedCost = normalizeUnitCostToBase({ unitCost: opCost, unit: unitCode });
+          <div className="space-y-3">
+            {lineItems.map((item, index) => {
+              const productLabel = getProductLabel(item);
+              const opQty = Number(item.quantity_ordered ?? 0);
+              const opCost = Number(item.unit_cost ?? 0);
+              const unitCode = String(item.unit ?? "u");
+              const normalizedQty = normalizeQuantityToBase({ quantity: opQty, unit: unitCode });
+              const normalizedCost = normalizeUnitCostToBase({ unitCost: opCost, unit: unitCode });
+              const receivedLabel =
+                item.quantity_received != null ? `${formatQty(Number(item.quantity_received))} ${unitCode}` : "Pendiente";
 
-                return (
-                  <TableRow key={item.id}>
-                    <TableCell>
-                      <div className="font-semibold text-[var(--ui-text)]">{productLabel}</div>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {formatQty(opQty)} {unitCode}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {formatQty(normalizedQty.baseQuantity)} {normalizedQty.baseUnit}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {item.quantity_received != null ? formatQty(Number(item.quantity_received)) : "-"}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {formatMoney(opCost, order.currency)} / {unitCode}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {formatMoney(normalizedCost.baseUnitCost, order.currency)} / {normalizedQty.baseUnit}
-                    </TableCell>
-                    <TableCell className="text-right">{formatMoney(item.line_total, order.currency)}</TableCell>
-                    <TableCell>{item.unit ?? "-"}</TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
+              return (
+                <article
+                  key={item.id}
+                  className="rounded-[1.5rem] border border-[var(--ui-border)] bg-white p-4 shadow-sm"
+                >
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="min-w-0 flex-1">
+                      <div className="ui-caption">Producto #{index + 1}</div>
+                      <div className="mt-1 text-base font-bold leading-6 text-[var(--ui-text)]">
+                        {productLabel}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-4 py-3 lg:min-w-[180px] lg:text-right">
+                      <div className="ui-caption">Total interno</div>
+                      <div className="mt-1 text-base font-bold text-[var(--ui-text)]">
+                        {formatMoney(item.line_total, order.currency)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3">
+                      <div className="ui-caption">Pedido</div>
+                      <div className="mt-1 text-sm font-bold text-[var(--ui-text)]">
+                        {formatQty(opQty)} {unitCode}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3">
+                      <div className="ui-caption">Cantidad base</div>
+                      <div className="mt-1 text-sm font-bold text-[var(--ui-text)]">
+                        {formatQty(normalizedQty.baseQuantity)} {normalizedQty.baseUnit}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3">
+                      <div className="ui-caption">Recibido</div>
+                      <div className="mt-1 text-sm font-bold text-[var(--ui-text)]">{receivedLabel}</div>
+                    </div>
+                    <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3">
+                      <div className="ui-caption">Unidad operativa</div>
+                      <div className="mt-1 text-sm font-bold text-[var(--ui-text)]">{item.unit ?? "-"}</div>
+                    </div>
+                  </div>
+
+                  <details className="mt-3 rounded-2xl border border-[var(--ui-border)] bg-white px-4 py-3">
+                    <summary className="cursor-pointer text-sm font-bold text-[var(--ui-text)]">
+                      Ver costos internos
+                    </summary>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                      <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3">
+                        <div className="ui-caption">Costo operativo</div>
+                        <div className="mt-1 text-sm font-bold text-[var(--ui-text)]">
+                          {formatMoney(opCost, order.currency)} / {unitCode}
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3">
+                        <div className="ui-caption">Costo base</div>
+                        <div className="mt-1 text-sm font-bold text-[var(--ui-text)]">
+                          {formatMoney(normalizedCost.baseUnitCost, order.currency)} / {normalizedQty.baseUnit}
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3">
+                        <div className="ui-caption">Total interno</div>
+                        <div className="mt-1 text-sm font-bold text-[var(--ui-text)]">
+                          {formatMoney(item.line_total, order.currency)}
+                        </div>
+                      </div>
+                    </div>
+                  </details>
+                </article>
+              );
+            })}
+          </div>
         )}
       </section>
     </div>
