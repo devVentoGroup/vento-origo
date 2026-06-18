@@ -68,6 +68,17 @@ function getProductLabel(item: PurchaseOrderItemWithProduct): string {
   return `${product.sku ? `${product.sku} - ` : ""}${product.name ?? "Producto"}`;
 }
 
+function getSupplierLineLabel(
+  item: PurchaseOrderItemWithProduct & {
+    input_unit_label?: string | null;
+  },
+  supplierAliasesByProduct: Map<string, string>
+): string {
+  const alias = supplierAliasesByProduct.get(String(item.product_id ?? "").trim());
+  if (alias) return alias;
+  return String(item.input_unit_label ?? item.unit ?? "").trim() || "Producto";
+}
+
 export default async function PurchaseOrderDetailPage({
   params,
   searchParams,
@@ -113,12 +124,28 @@ export default async function PurchaseOrderDetailPage({
 
   const { data: items } = await supabase
     .from("purchase_order_items")
-    .select("id,product_id,quantity_ordered,quantity_received,unit_cost,line_total,unit,products(id,name,sku)")
+    .select("id,product_id,quantity_ordered,quantity_received,unit_cost,line_total,unit,input_unit_label,stock_quantity_ordered,stock_unit_code,products(id,name,sku)")
     .eq("purchase_order_id", id)
     .order("created_at", { ascending: true });
 
   const order = po as unknown as PurchaseOrderWithRelations;
   const lineItems = (items ?? []) as unknown as PurchaseOrderItemWithProduct[];
+  const productIds = Array.from(
+    new Set(lineItems.map((item) => String(item.product_id ?? "").trim()).filter(Boolean))
+  );
+  const { data: supplierAliasRows } = productIds.length
+    ? await supabase
+        .from("product_suppliers")
+        .select("product_id,supplier_product_alias")
+        .eq("supplier_id", order.supplier_id)
+        .in("product_id", productIds)
+    : { data: [] as Array<{ product_id: string; supplier_product_alias: string | null }> };
+  const supplierAliasesByProduct = new Map<string, string>();
+  for (const row of (supplierAliasRows ?? []) as Array<{ product_id: string; supplier_product_alias: string | null }>) {
+    const productId = String(row.product_id ?? "").trim();
+    const alias = String(row.supplier_product_alias ?? "").trim();
+    if (productId && alias) supplierAliasesByProduct.set(productId, alias);
+  }
   const isDraft = order.status === "draft";
   const canReceiveInOrigo = order.status === "sent" || order.status === "received";
 
@@ -149,8 +176,8 @@ export default async function PurchaseOrderDetailPage({
 
   const supplierLines = lineItems.map((item, index) => {
     const opQty = Number(item.quantity_ordered ?? 0);
-    const unitCode = String(item.unit ?? "u");
-    return `${index + 1}. ${getProductLabel(item)} — ${formatQty(opQty)} ${unitCode}`;
+    const supplierLabel = getSupplierLineLabel(item, supplierAliasesByProduct);
+    return `${index + 1}. ${formatQty(opQty)} ${supplierLabel}`;
   });
 
   const messageToSupplier = [
@@ -353,7 +380,15 @@ export default async function PurchaseOrderDetailPage({
               const opQty = Number(item.quantity_ordered ?? 0);
               const opCost = Number(item.unit_cost ?? 0);
               const unitCode = String(item.unit ?? "u");
-              const normalizedQty = normalizeQuantityToBase({ quantity: opQty, unit: unitCode });
+              const supplierLabel = getSupplierLineLabel(item, supplierAliasesByProduct);
+              const snapshotStockQty = Number(item.stock_quantity_ordered ?? NaN);
+              const snapshotStockUnit = String(item.stock_unit_code ?? "").trim();
+              const normalizedQty = Number.isFinite(snapshotStockQty) && snapshotStockQty > 0 && snapshotStockUnit
+                ? {
+                    baseQuantity: snapshotStockQty,
+                    baseUnit: snapshotStockUnit,
+                  }
+                : normalizeQuantityToBase({ quantity: opQty, unit: unitCode });
               const normalizedCost = normalizeUnitCostToBase({ unitCost: opCost, unit: unitCode });
               const receivedLabel =
                 item.quantity_received != null ? `${formatQty(Number(item.quantity_received))} ${unitCode}` : "Pendiente";
@@ -380,9 +415,9 @@ export default async function PurchaseOrderDetailPage({
 
                   <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                     <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3">
-                      <div className="ui-caption">Pedido</div>
+                      <div className="ui-caption">Pedido proveedor</div>
                       <div className="mt-1 text-sm font-bold text-[var(--ui-text)]">
-                        {formatQty(opQty)} {unitCode}
+                        {formatQty(opQty)} {supplierLabel}
                       </div>
                     </div>
                     <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3">

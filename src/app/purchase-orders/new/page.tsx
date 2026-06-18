@@ -33,6 +33,7 @@ type ProductRow = {
 type ProductSupplierLinkRow = {
   product_id: string;
   supplier_id: string;
+  supplier_product_alias?: string | null;
   is_primary?: boolean | null;
   products?: ProductRow | ProductRow[] | null;
 };
@@ -77,6 +78,7 @@ export default async function NewPurchaseOrderPage({
           `
           product_id,
           supplier_id,
+          supplier_product_alias,
           is_primary,
           products!inner(
             id,
@@ -99,6 +101,7 @@ export default async function NewPurchaseOrderPage({
 
   const productById = new Map<string, ProductRow>();
   const supplierIdsByProduct = new Map<string, Set<string>>();
+  const supplierAliasesByProduct = new Map<string, Record<string, string>>();
 
   for (const row of supplierProducts) {
     const product = firstRelated(row.products);
@@ -123,6 +126,13 @@ export default async function NewPurchaseOrderPage({
     const current = supplierIdsByProduct.get(productId) ?? new Set<string>();
     current.add(supplierId);
     supplierIdsByProduct.set(productId, current);
+
+    const alias = String(row.supplier_product_alias ?? "").trim();
+    if (alias) {
+      const aliases = supplierAliasesByProduct.get(productId) ?? {};
+      aliases[supplierId] = alias;
+      supplierAliasesByProduct.set(productId, aliases);
+    }
   }
 
   const productIds = Array.from(productById.keys());
@@ -168,6 +178,7 @@ export default async function NewPurchaseOrderPage({
       stock_unit_code: product.stock_unit_code,
       cost: product.cost,
       supplier_ids: Array.from(supplierIdsByProduct.get(product.id) ?? []),
+      supplier_aliases: supplierAliasesByProduct.get(product.id) ?? {},
       presentations: presentationsByProduct.get(product.id) ?? [],
     }))
   );

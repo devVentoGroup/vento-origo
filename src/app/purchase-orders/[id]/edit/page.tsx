@@ -122,7 +122,7 @@ export default async function EditPurchaseOrderPage({
     ? await Promise.all([
       supabase
         .from("product_suppliers")
-        .select("product_id,supplier_id,is_primary")
+        .select("product_id,supplier_id,supplier_product_alias,is_primary")
         .in("product_id", productIds),
       supabase
         .from("product_uom_profiles")
@@ -136,13 +136,21 @@ export default async function EditPurchaseOrderPage({
     ])
     : [{ data: [] }, { data: [] }];
   const supplierIdsByProduct = new Map<string, Set<string>>();
-  for (const row of (supplierLinksData ?? []) as Array<{ product_id: string; supplier_id: string; is_primary?: boolean | null }>) {
+  const supplierAliasesByProduct = new Map<string, Record<string, string>>();
+  for (const row of (supplierLinksData ?? []) as Array<{ product_id: string; supplier_id: string; supplier_product_alias?: string | null; is_primary?: boolean | null }>) {
     const productId = String(row.product_id ?? "").trim();
     const supplierId = String(row.supplier_id ?? "").trim();
     if (!productId || !supplierId) continue;
     const current = supplierIdsByProduct.get(productId) ?? new Set<string>();
     current.add(supplierId);
     supplierIdsByProduct.set(productId, current);
+
+    const alias = String(row.supplier_product_alias ?? "").trim();
+    if (alias) {
+      const aliases = supplierAliasesByProduct.get(productId) ?? {};
+      aliases[supplierId] = alias;
+      supplierAliasesByProduct.set(productId, aliases);
+    }
   }
   const presentationsByProduct = new Map<string, ProductPresentationOption[]>();
 
@@ -176,6 +184,7 @@ export default async function EditPurchaseOrderPage({
   const productsWithSupplierLinks = products.map((product) => ({
     ...product,
     supplier_ids: Array.from(supplierIdsByProduct.get(product.id) ?? []),
+    supplier_aliases: supplierAliasesByProduct.get(product.id) ?? {},
     presentations: presentationsByProduct.get(product.id) ?? [],
   }));
 

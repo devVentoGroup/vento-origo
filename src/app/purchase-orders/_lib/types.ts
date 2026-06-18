@@ -26,6 +26,9 @@ export type PurchaseOrderItemRow = {
   unit_cost: number;
   line_total: number | null;
   unit: string | null;
+  input_unit_label?: string | null;
+  stock_quantity_ordered?: number | null;
+  stock_unit_code?: string | null;
   created_at: string;
 };
 

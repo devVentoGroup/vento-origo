@@ -516,7 +516,7 @@ export async function GET(
   const { data: po, error: poErr } = await supabase
     .from("purchase_orders")
     .select(
-      "id,status,created_at,expected_at,total_amount,currency,notes,suppliers(name),sites(name)"
+      "id,supplier_id,status,created_at,expected_at,total_amount,currency,notes,suppliers(name),sites(name)"
     )
     .eq("id", id)
     .single();
@@ -527,7 +527,7 @@ export async function GET(
 
   const { data: items, error: itemsErr } = await supabase
     .from("purchase_order_items")
-    .select("quantity_ordered,quantity_received,unit_cost,line_total,unit,products(name,sku)")
+    .select("product_id,quantity_ordered,quantity_received,unit_cost,line_total,unit,input_unit_label,products(name,sku)")
     .eq("purchase_order_id", id)
     .order("created_at", { ascending: true });
 
@@ -538,6 +538,22 @@ export async function GET(
   const supplierName = (po.suppliers as { name?: string } | null)?.name ?? "-";
   const siteName = (po.sites as { name?: string } | null)?.name ?? "-";
   const orderRef = formatPurchaseOrderRef({ id: po.id, createdAt: po.created_at });
+  const productIds = Array.from(
+    new Set(((items ?? []) as Array<{ product_id?: string | null }>).map((item) => String(item.product_id ?? "").trim()).filter(Boolean))
+  );
+  const { data: supplierAliasRows } = productIds.length
+    ? await supabase
+        .from("product_suppliers")
+        .select("product_id,supplier_product_alias")
+        .eq("supplier_id", po.supplier_id)
+        .in("product_id", productIds)
+    : { data: [] as Array<{ product_id: string; supplier_product_alias: string | null }> };
+  const supplierAliasesByProduct = new Map<string, string>();
+  for (const row of (supplierAliasRows ?? []) as Array<{ product_id: string; supplier_product_alias: string | null }>) {
+    const productId = String(row.product_id ?? "").trim();
+    const alias = String(row.supplier_product_alias ?? "").trim();
+    if (productId && alias) supplierAliasesByProduct.set(productId, alias);
+  }
 
   const currencyCode = String(po.currency ?? "COP");
   const qtyFmt = new Intl.NumberFormat("es-CO", {
@@ -566,16 +582,15 @@ export async function GET(
 
   if (hasValidToken) {
     const supplierRows = (items ?? []).map((row) => {
-      const product = row.products as { name?: string | null; sku?: string | null } | null;
-      const productLabel = product
-        ? `${product.sku ? `${product.sku} - ` : ""}${product.name ?? ""}`
-        : "Producto";
+      const productLabel =
+        supplierAliasesByProduct.get(String(row.product_id ?? "").trim()) ||
+        String(row.input_unit_label ?? row.unit ?? "").trim() ||
+        "Producto";
       const opQty = Number(row.quantity_ordered ?? 0);
-      const unitCode = String(row.unit ?? "u");
 
       return {
         productLabel,
-        quantityLabel: `${qtyFmt.format(Number.isFinite(opQty) ? opQty : 0)} ${unitCode}`.trim(),
+        quantityLabel: qtyFmt.format(Number.isFinite(opQty) ? opQty : 0),
       };
     });
 

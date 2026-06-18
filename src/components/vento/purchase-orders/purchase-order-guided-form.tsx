@@ -23,6 +23,7 @@ type ProductOption = {
   stock_unit_code?: string | null;
   cost?: number | null;
   supplier_ids?: string[] | null;
+  supplier_aliases?: Record<string, string>;
   presentations?: ProductPresentationOption[] | null;
 };
 
@@ -138,6 +139,11 @@ function getInternalEstimatedLineTotal(product: ProductOption | undefined, stock
 function productLabel(product: ProductOption | undefined) {
   if (!product) return "Producto";
   return `${product.sku ? `${product.sku} · ` : ""}${product.name}`;
+}
+
+function supplierProductLabel(product: ProductOption | undefined, supplierId: string): string {
+  const alias = supplierId ? String(product?.supplier_aliases?.[supplierId] ?? "").trim() : "";
+  return alias || product?.name || "Producto";
 }
 
 export function PurchaseOrderGuidedForm({
@@ -413,6 +419,7 @@ export function PurchaseOrderGuidedForm({
               const presentations = product?.presentations ?? [];
               const visibleProducts = visibleProductsByLine[index] ?? [];
               const selectedPresentation = summary.presentation;
+              const supplierLabel = supplierProductLabel(product, supplierId);
 
               return (
                 <div
@@ -554,10 +561,13 @@ export function PurchaseOrderGuidedForm({
                         {line.product_id && selectedPresentation ? (
                           <>
                             <div className="font-semibold text-[var(--ui-text)]">
-                              {selectedPresentation.label}
+                              {supplierLabel}
                             </div>
                             <div className="mt-1">
-                              {formatQty(summary.quantity)} presentación(es) ={" "}
+                              Proveedor verá: {formatQty(summary.quantity)} {supplierLabel}
+                            </div>
+                            <div className="mt-1">
+                              Interno: {selectedPresentation.label} ={" "}
                               {formatQty(summary.stockQuantity)} {summary.stockUnitCode}
                             </div>
                           </>
