@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { deflateSync } from "node:zlib";
 import { NextResponse } from "next/server";
 import { createClient as createSupabaseServiceClient } from "@supabase/supabase-js";
 import sharp from "sharp";
@@ -31,7 +32,8 @@ function createServiceRoleClient() {
 }
 
 type PdfImage = {
-  bytes: Uint8Array;
+  rgbBytes: Uint8Array;
+  alphaBytes: Uint8Array;
   width: number;
   height: number;
 };
@@ -52,12 +54,23 @@ async function loadBrandLogoImage(): Promise<PdfImage | null> {
     try {
       const file = await readFile(absolute);
       const transformed = await sharp(file)
-        .flatten({ background: "#ffffff" })
-        .resize({ width: 220, height: 80, fit: "inside", withoutEnlargement: true })
-        .jpeg({ quality: 88, chromaSubsampling: "4:4:4" })
+        .ensureAlpha()
+        .raw()
         .toBuffer({ resolveWithObject: true });
+      const pixelCount = transformed.info.width * transformed.info.height;
+      const rgbBytes = new Uint8Array(pixelCount * 3);
+      const alphaBytes = new Uint8Array(pixelCount);
+
+      for (let source = 0, rgb = 0, alpha = 0; source < transformed.data.length; source += 4, rgb += 3, alpha += 1) {
+        rgbBytes[rgb] = transformed.data[source];
+        rgbBytes[rgb + 1] = transformed.data[source + 1];
+        rgbBytes[rgb + 2] = transformed.data[source + 2];
+        alphaBytes[alpha] = transformed.data[source + 3];
+      }
+
       return {
-        bytes: new Uint8Array(transformed.data),
+        rgbBytes,
+        alphaBytes,
         width: transformed.info.width,
         height: transformed.info.height,
       };
@@ -197,6 +210,7 @@ function buildPdfObjects(pageStreams: string[], image?: PdfImage | null): Uint8A
   const fontRegularId = nextId++;
   const fontBoldId = nextId++;
   const imageId = image ? nextId++ : null;
+  const imageMaskId = image ? nextId++ : null;
   const maxId = nextId - 1;
   const objects = new Array<string>(maxId + 1).fill("");
 
@@ -215,11 +229,17 @@ function buildPdfObjects(pageStreams: string[], image?: PdfImage | null): Uint8A
 
   objects[fontRegularId] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
   objects[fontBoldId] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>";
-  if (image && imageId) {
-    const hex = Array.from(image.bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  if (image && imageId && imageMaskId) {
+    const rgbCompressed = deflateSync(image.rgbBytes);
+    const alphaCompressed = deflateSync(image.alphaBytes);
+    const rgbHex = Array.from(rgbCompressed, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    const alphaHex = Array.from(alphaCompressed, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    objects[imageMaskId] =
+      `<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} ` +
+      `/ColorSpace /DeviceGray /BitsPerComponent 8 /Filter [/ASCIIHexDecode /FlateDecode] /Length ${alphaHex.length + 1} >>\nstream\n${alphaHex}>\nendstream`;
     objects[imageId] =
       `<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} ` +
-      `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter [/ASCIIHexDecode /DCTDecode] /Length ${hex.length + 1} >>\nstream\n${hex}>\nendstream`;
+      `/ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask ${imageMaskId} 0 R /Filter [/ASCIIHexDecode /FlateDecode] /Length ${rgbHex.length + 1} >>\nstream\n${rgbHex}>\nendstream`;
   }
 
   let body = "";
@@ -296,11 +316,17 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
     commands.push(`${rgbToPdf(color)} rg\n${firstX.toFixed(2)} ${firstY.toFixed(2)} m ${pathCommands} h f`);
   };
 
-  const image = (opts: { x: number; top: number; width: number; height: number }) => {
+  const image = (opts: { x: number; top: number; maxWidth: number; maxHeight: number }) => {
     if (!input.brand.logoImage) return;
-    const y = PAGE_HEIGHT - opts.top - opts.height;
+    const scale = Math.min(
+      opts.maxWidth / input.brand.logoImage.width,
+      opts.maxHeight / input.brand.logoImage.height
+    );
+    const width = input.brand.logoImage.width * scale;
+    const height = input.brand.logoImage.height * scale;
+    const y = PAGE_HEIGHT - opts.top - height;
     commands.push(
-      `q\n${opts.width.toFixed(2)} 0 0 ${opts.height.toFixed(2)} ${opts.x.toFixed(2)} ${y.toFixed(2)} cm\n/Logo Do\nQ`
+      `q\n${width.toFixed(2)} 0 0 ${height.toFixed(2)} ${opts.x.toFixed(2)} ${y.toFixed(2)} cm\n/Logo Do\nQ`
     );
   };
 
@@ -376,7 +402,7 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
       ],
       paleMint
     );
-    image({ x: PAGE_MARGIN, top: 26, width: 96, height: 34 });
+    image({ x: PAGE_MARGIN, top: 22, maxWidth: 86, maxHeight: 46 });
     text({
       value: input.brand.logoImage ? "" : input.brand.businessName,
       x: PAGE_MARGIN,
