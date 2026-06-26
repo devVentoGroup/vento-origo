@@ -126,6 +126,18 @@ function pluralizeUnit(value: string, quantity: number): string {
   return `${unit}s`;
 }
 
+function getPresentationPurchaseUnitName(presentation: ProductPresentationOption): string {
+  const label = String(presentation.label ?? "").trim();
+  const [firstWord] = label.split(/\s+/);
+  const normalizedFirstWord = String(firstWord ?? "").trim().toLowerCase();
+
+  if (normalizedFirstWord && /[a-záéíóúñ]/i.test(normalizedFirstWord)) {
+    return normalizedFirstWord;
+  }
+
+  return "presentación";
+}
+
 function formatPresentationDisplayName(
   presentation: ProductPresentationOption,
   stockUnitCode: string
@@ -146,7 +158,7 @@ function formatInventoryConversionHint(
   presentation: ProductPresentationOption,
   stockUnitCode: string
 ): string {
-  const unit = String(presentation.input_unit_code ?? "").trim().toLowerCase() || "presentación";
+  const unit = getPresentationPurchaseUnitName(presentation);
   const factor = Number(presentation.qty_in_stock_unit ?? 0);
   const safeFactor = Number.isFinite(factor) && factor > 0 ? factor : 1;
 
@@ -444,6 +456,9 @@ export function PurchaseOrderGuidedForm({
               const presentations = product?.presentations ?? [];
               const visibleProducts = visibleProductsByLine[index] ?? [];
               const selectedPresentation = summary.presentation;
+              const selectedPurchaseUnit = selectedPresentation
+                ? getPresentationPurchaseUnitName(selectedPresentation)
+                : "presentación";
               const supplierLabel = supplierProductLabel(product, supplierId);
 
               return (
@@ -594,15 +609,12 @@ export function PurchaseOrderGuidedForm({
                               {supplierLabel}
                             </div>
                             <div className="mt-1">
-                              Se comprará por {String(selectedPresentation.input_unit_code ?? "presentación").toLowerCase()}.
+                              Se comprará por {selectedPurchaseUnit}.
                             </div>
                             <div className="mt-1">
                               Cantidad: {formatQty(summary.quantity)}{" "}
-                              {pluralizeUnit(
-                                String(selectedPresentation.input_unit_code ?? "presentación").toLowerCase(),
-                                summary.quantity
-                              )}{" "}
-                              · Entrada estimada: {formatQty(summary.stockQuantity)} {summary.stockUnitCode}.
+                              {pluralizeUnit(selectedPurchaseUnit, summary.quantity)} · Entrada estimada:{" "}
+                              {formatQty(summary.stockQuantity)} {summary.stockUnitCode}.
                             </div>
                           </>
                         ) : line.product_id && presentations.length === 0 ? (
