@@ -107,11 +107,6 @@ function getStockUnitCode(product: ProductOption | undefined): string {
   return String(product?.stock_unit_code ?? product?.unit ?? "un").trim().toLowerCase() || "un";
 }
 
-function getDefaultPresentation(product: ProductOption | undefined): ProductPresentationOption | null {
-  const presentations = product?.presentations ?? [];
-  return presentations.find((presentation) => presentation.is_default) ?? presentations[0] ?? null;
-}
-
 function getPresentationById(
   product: ProductOption | undefined,
   presentationId: string
@@ -120,11 +115,42 @@ function getPresentationById(
   return presentations.find((presentation) => presentation.id === presentationId) ?? null;
 }
 
-function formatPresentationLabel(
+function capitalizeFirst(value: string): string {
+  if (!value) return value;
+  return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
+}
+
+function pluralizeUnit(value: string, quantity: number): string {
+  const unit = value.trim();
+  if (!unit || quantity === 1 || unit.toLowerCase().endsWith("s")) return unit;
+  return `${unit}s`;
+}
+
+function formatPresentationDisplayName(
   presentation: ProductPresentationOption,
   stockUnitCode: string
 ): string {
-  return `${presentation.label} · 1 = ${formatQty(Number(presentation.qty_in_stock_unit ?? 0))} ${stockUnitCode}`;
+  const label = String(presentation.label ?? "").trim();
+  if (label) return label;
+
+  const unit = String(presentation.input_unit_code ?? "").trim().toLowerCase();
+  const factor = Number(presentation.qty_in_stock_unit ?? 0);
+  if (unit && Number.isFinite(factor) && factor > 0) {
+    return `${capitalizeFirst(unit)} de ${formatQty(factor)} ${stockUnitCode}`;
+  }
+
+  return unit ? capitalizeFirst(unit) : "Presentación";
+}
+
+function formatInventoryConversionHint(
+  presentation: ProductPresentationOption,
+  stockUnitCode: string
+): string {
+  const unit = String(presentation.input_unit_code ?? "").trim().toLowerCase() || "presentación";
+  const factor = Number(presentation.qty_in_stock_unit ?? 0);
+  const safeFactor = Number.isFinite(factor) && factor > 0 ? factor : 1;
+
+  return `Entrada estimada a inventario: ${formatQty(safeFactor)} ${stockUnitCode} por ${unit}.`;
 }
 
 function getInternalEstimatedLineTotal(product: ProductOption | undefined, stockQuantity: number): number {
@@ -208,7 +234,6 @@ export function PurchaseOrderGuidedForm({
   const lineSummaries = useMemo(() => {
     return lineRows.map((line) => {
       const product = productById.get(line.product_id);
-      const presentations = product?.presentations ?? [];
       const presentation = getPresentationById(product, line.presentation_id);
       const quantity = toNum(line.quantity) ?? 0;
       const conversionFactor = presentation ? Number(presentation.qty_in_stock_unit ?? 0) : 1;
@@ -537,11 +562,16 @@ export function PurchaseOrderGuidedForm({
                               </option>
                               {presentations.map((presentation) => (
                                 <option key={presentation.id} value={presentation.id}>
-                                  {formatPresentationLabel(presentation, summary.stockUnitCode)}
+                                  {formatPresentationDisplayName(presentation, summary.stockUnitCode)}
                                 </option>
                               ))}
                             </select>
                           )}
+                          {selectedPresentation ? (
+                            <p className="mt-2 text-xs text-[var(--ui-muted)]">
+                              {formatInventoryConversionHint(selectedPresentation, summary.stockUnitCode)}
+                            </p>
+                          ) : null}
                         </div>
 
                         <label>
@@ -564,11 +594,15 @@ export function PurchaseOrderGuidedForm({
                               {supplierLabel}
                             </div>
                             <div className="mt-1">
-                              Proveedor verá: {formatQty(summary.quantity)} {supplierLabel}
+                              Se comprará por {String(selectedPresentation.input_unit_code ?? "presentación").toLowerCase()}.
                             </div>
                             <div className="mt-1">
-                              Interno: {selectedPresentation.label} ={" "}
-                              {formatQty(summary.stockQuantity)} {summary.stockUnitCode}
+                              Cantidad: {formatQty(summary.quantity)}{" "}
+                              {pluralizeUnit(
+                                String(selectedPresentation.input_unit_code ?? "presentación").toLowerCase(),
+                                summary.quantity
+                              )}{" "}
+                              · Entrada estimada: {formatQty(summary.stockQuantity)} {summary.stockUnitCode}.
                             </div>
                           </>
                         ) : line.product_id && presentations.length === 0 ? (
