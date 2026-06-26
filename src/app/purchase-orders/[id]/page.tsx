@@ -48,7 +48,13 @@ function formatQty(value: number | null | undefined): string {
 }
 
 function formatDate(value: string | null | undefined): string {
-  return value ? new Date(value).toLocaleDateString("es-CO") : "Sin fecha definida";
+  return value
+    ? new Date(value).toLocaleDateString("es-CO", {
+        day: "2-digit",
+        month: "long",
+        year: "numeric",
+      })
+    : "Sin fecha definida";
 }
 
 function formatDateTime(value: string | null | undefined): string {
@@ -68,15 +74,23 @@ function getProductLabel(item: PurchaseOrderItemWithProduct): string {
   return `${product.sku ? `${product.sku} - ` : ""}${product.name ?? "Producto"}`;
 }
 
-function getSupplierLineLabel(
+function getSupplierProductLabel(
   item: PurchaseOrderItemWithProduct & {
     input_unit_label?: string | null;
   },
   supplierAliasesByProduct: Map<string, string>
 ): string {
+  const product = item.products as { sku?: string | null; name?: string | null } | null;
   const alias = supplierAliasesByProduct.get(String(item.product_id ?? "").trim());
-  if (alias) return alias;
-  return String(item.input_unit_label ?? item.unit ?? "").trim() || "Producto";
+  return alias || String(product?.name ?? "").trim() || String(item.product_id ?? "").trim() || "Producto";
+}
+
+function getSupplierPresentationLabel(
+  item: PurchaseOrderItemWithProduct & {
+    input_unit_label?: string | null;
+  }
+): string {
+  return String(item.input_unit_label ?? item.unit ?? "").trim() || "presentación";
 }
 
 export default async function PurchaseOrderDetailPage({
@@ -176,24 +190,28 @@ export default async function PurchaseOrderDetailPage({
 
   const supplierLines = lineItems.map((item, index) => {
     const opQty = Number(item.quantity_ordered ?? 0);
-    const supplierLabel = getSupplierLineLabel(item, supplierAliasesByProduct);
-    return `${index + 1}. ${formatQty(opQty)} ${supplierLabel}`;
+    const productLabel = getSupplierProductLabel(item, supplierAliasesByProduct);
+    const presentationLabel = getSupplierPresentationLabel(item);
+    return `${index + 1}. ${productLabel}: ${formatQty(opQty)} ${presentationLabel}`;
   });
 
   const messageToSupplier = [
     `Hola ${supplierName},`,
     "",
-    `Por favor nos ayudas confirmando disponibilidad para la orden de compra ${orderRef}.`,
-    `Sede destino: ${siteName}.`,
-    `Fecha esperada: ${expectedAtLabel}.`,
+    "Por favor confírmanos disponibilidad para esta solicitud de compra:",
+    "",
+    `OC: ${orderRef}`,
+    `Destino: ${siteName}`,
+    `Fecha esperada: ${expectedAtLabel}`,
     "",
     "Productos solicitados:",
     ...(supplierLines.length ? supplierLines : ["- Sin lineas registradas."]),
     ...(order.notes ? ["", `Notas: ${order.notes}`] : []),
     "",
-    `PDF de la solicitud: ${pdfUrlWithToken}`,
+    `Ver PDF de la solicitud: ${pdfUrlWithToken}`,
     "",
-    "Quedamos atentos a tu confirmacion. Gracias.",
+    "Quedamos atentos a tu confirmación.",
+    "Gracias.",
   ].join("\n");
 
   const requestedQtyTotal = lineItems.reduce((acc, item) => acc + Number(item.quantity_ordered ?? 0), 0);
@@ -380,7 +398,8 @@ export default async function PurchaseOrderDetailPage({
               const opQty = Number(item.quantity_ordered ?? 0);
               const opCost = Number(item.unit_cost ?? 0);
               const unitCode = String(item.unit ?? "u");
-              const supplierLabel = getSupplierLineLabel(item, supplierAliasesByProduct);
+              const supplierProductLabel = getSupplierProductLabel(item, supplierAliasesByProduct);
+              const supplierPresentationLabel = getSupplierPresentationLabel(item);
               const snapshotStockQty = Number(item.stock_quantity_ordered ?? NaN);
               const snapshotStockUnit = String(item.stock_unit_code ?? "").trim();
               const normalizedQty = Number.isFinite(snapshotStockQty) && snapshotStockQty > 0 && snapshotStockUnit
@@ -417,7 +436,7 @@ export default async function PurchaseOrderDetailPage({
                     <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3">
                       <div className="ui-caption">Pedido proveedor</div>
                       <div className="mt-1 text-sm font-bold text-[var(--ui-text)]">
-                        {formatQty(opQty)} {supplierLabel}
+                        {supplierProductLabel}: {formatQty(opQty)} {supplierPresentationLabel}
                       </div>
                     </div>
                     <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3">

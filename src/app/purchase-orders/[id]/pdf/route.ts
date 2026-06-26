@@ -67,6 +67,7 @@ const STATUS_SUPPLIER_LABELS: Record<string, string> = {
 
 type SupplierPdfItem = {
   productLabel: string;
+  presentationLabel: string;
   quantityLabel: string;
 };
 
@@ -217,7 +218,6 @@ function buildPdfObjects(pageStreams: string[]): Uint8Array {
 
 function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Uint8Array {
   const primaryColor = parseHexColor(input.brand.primaryColor, [53, 190, 146]);
-  const softColor = parseHexColor(input.brand.softColor, [236, 255, 247]);
   const textColor = parseHexColor(input.brand.textColor, [11, 42, 31]);
   const mutedColor = parseHexColor(input.brand.mutedColor, [100, 116, 139]);
   const borderColor: Rgb = [209, 213, 219];
@@ -290,7 +290,8 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
   };
 
   const drawHeader = () => {
-    rect(0, 0, PAGE_WIDTH, 118, "f", primaryColor);
+    rect(0, 0, PAGE_WIDTH, 132, "f", primaryColor);
+    rect(PAGE_WIDTH - 160, 0, 160, 132, "f", parseHexColor(input.brand.softColor, [236, 255, 247]));
     text({
       value: input.brand.businessName,
       x: PAGE_MARGIN,
@@ -302,8 +303,8 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
     text({
       value: input.brand.documentTitle,
       x: PAGE_MARGIN,
-      top: 64,
-      size: 22,
+      top: 62,
+      size: 24,
       font: "F2",
       color: white,
     });
@@ -314,7 +315,24 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
       size: 11,
       color: white,
     });
-    cursorTop = 142;
+    text({
+      value: "Confirmacion de disponibilidad",
+      x: PAGE_WIDTH - PAGE_MARGIN,
+      top: 52,
+      size: 11,
+      font: "F2",
+      color: textColor,
+      align: "right",
+    });
+    text({
+      value: "Por favor revisa cantidades y fecha esperada.",
+      x: PAGE_WIDTH - PAGE_MARGIN,
+      top: 74,
+      size: 9,
+      color: mutedColor,
+      align: "right",
+    });
+    cursorTop = 154;
   };
 
   const drawSummary = () => {
@@ -353,10 +371,34 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
     cursorTop += Math.ceil(fields.length / 2) * (boxHeight + 8) + 14;
   };
 
+  const drawIntro = () => {
+    const lines = wrapText(
+      "Solicitamos confirmar disponibilidad, fecha de entrega y cualquier novedad sobre los productos listados. Este PDF no reemplaza la coordinacion operativa acordada con Vento Group.",
+      CONTENT_WIDTH - 20,
+      10
+    );
+    const boxHeight = 22 + lines.length * 12;
+
+    ensureSpace(boxHeight + 10);
+    rect(PAGE_MARGIN, cursorTop, CONTENT_WIDTH, boxHeight, "S", borderColor);
+    lines.forEach((lineValue, index) => {
+      text({
+        value: lineValue,
+        x: PAGE_MARGIN + 10,
+        top: cursorTop + 16 + index * 12,
+        size: 10,
+        color: mutedColor,
+        maxWidth: CONTENT_WIDTH - 20,
+      });
+    });
+    cursorTop += boxHeight + 18;
+  };
+
   const drawItems = () => {
     const tableX = PAGE_MARGIN;
-    const productColWidth = 355;
-    const qtyColWidth = CONTENT_WIDTH - productColWidth;
+    const productColWidth = 285;
+    const presentationColWidth = 135;
+    const qtyColWidth = CONTENT_WIDTH - productColWidth - presentationColWidth;
     const headerHeight = 25;
 
     ensureSpace(60);
@@ -373,8 +415,16 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
       rect(tableX, cursorTop, CONTENT_WIDTH, headerHeight, "f", primaryColor);
       text({ value: "Producto", x: tableX + 10, top: cursorTop + 17, size: 9.5, font: "F2", color: white });
       text({
-        value: "Cantidad solicitada",
-        x: tableX + productColWidth + qtyColWidth - 10,
+        value: "Presentación",
+        x: tableX + productColWidth + 10,
+        top: cursorTop + 17,
+        size: 9.5,
+        font: "F2",
+        color: white,
+      });
+      text({
+        value: "Cantidad",
+        x: tableX + CONTENT_WIDTH - 10,
         top: cursorTop + 17,
         size: 9.5,
         font: "F2",
@@ -388,7 +438,8 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
 
     for (const item of input.items) {
       const productLines = wrapText(item.productLabel, productColWidth - 20, 10);
-      const rowHeight = Math.max(30, 14 + productLines.length * 12);
+      const presentationLines = wrapText(item.presentationLabel, presentationColWidth - 20, 10);
+      const rowHeight = Math.max(34, 14 + Math.max(productLines.length, presentationLines.length) * 12);
 
       if (cursorTop + rowHeight > PAGE_BOTTOM_LIMIT) {
         beginPage();
@@ -406,6 +457,13 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
 
       rect(tableX, cursorTop, CONTENT_WIDTH, rowHeight, "S", borderColor);
       line(tableX + productColWidth, cursorTop, tableX + productColWidth, cursorTop + rowHeight, borderColor);
+      line(
+        tableX + productColWidth + presentationColWidth,
+        cursorTop,
+        tableX + productColWidth + presentationColWidth,
+        cursorTop + rowHeight,
+        borderColor
+      );
 
       productLines.forEach((lineValue, index) => {
         text({
@@ -414,6 +472,16 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
           top: cursorTop + 17 + index * 12,
           size: 10,
           maxWidth: productColWidth - 20,
+        });
+      });
+
+      presentationLines.forEach((lineValue, index) => {
+        text({
+          value: lineValue,
+          x: tableX + productColWidth + 10,
+          top: cursorTop + 17 + index * 12,
+          size: 10,
+          maxWidth: presentationColWidth - 20,
         });
       });
 
@@ -458,6 +526,7 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
   beginPage();
   drawHeader();
   drawSummary();
+  drawIntro();
   drawItems();
   drawNotes();
 
@@ -582,14 +651,17 @@ export async function GET(
 
   if (hasValidToken) {
     const supplierRows = (items ?? []).map((row) => {
+      const product = row.products as { name?: string | null; sku?: string | null } | null;
       const productLabel =
         supplierAliasesByProduct.get(String(row.product_id ?? "").trim()) ||
-        String(row.input_unit_label ?? row.unit ?? "").trim() ||
+        String(product?.name ?? "").trim() ||
         "Producto";
+      const presentationLabel = String(row.input_unit_label ?? row.unit ?? "").trim() || "Presentación";
       const opQty = Number(row.quantity_ordered ?? 0);
 
       return {
         productLabel,
+        presentationLabel,
         quantityLabel: qtyFmt.format(Number.isFinite(opQty) ? opQty : 0),
       };
     });
