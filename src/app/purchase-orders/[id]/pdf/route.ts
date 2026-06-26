@@ -362,9 +362,10 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
   };
 
   const drawHeader = () => {
-    const darkGreen: Rgb = [16, 112, 88];
-    const mint: Rgb = [226, 250, 241];
-    const paleMint = parseHexColor(input.brand.softColor, [236, 255, 247]);
+    const passWarm: Rgb = [184, 101, 27];
+    const passWarmDark: Rgb = [138, 69, 18];
+    const passSurfaceMuted: Rgb = [244, 238, 229];
+    const passWarmSoft = parseHexColor(input.brand.softColor, [247, 232, 214]);
 
     rect(0, 0, PAGE_WIDTH, 158, "f", white);
     polygon(
@@ -383,7 +384,7 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
         [PAGE_WIDTH, 158],
         [326, 158],
       ],
-      mint
+      passSurfaceMuted
     );
     polygon(
       [
@@ -392,7 +393,7 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
         [326, 158],
         [0, 158],
       ],
-      darkGreen
+      passWarmDark
     );
     polygon(
       [
@@ -401,7 +402,16 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
         [PAGE_WIDTH, 158],
         [524, 158],
       ],
-      paleMint
+      passWarmSoft
+    );
+    polygon(
+      [
+        [318, 0],
+        [392, 0],
+        [326, 158],
+        [264, 158],
+      ],
+      passWarm
     );
     image({ x: PAGE_MARGIN, top: 24, maxWidth: 82, maxHeight: 52 });
     text({
@@ -742,7 +752,7 @@ export async function GET(
     maximumFractionDigits: 6,
   });
 
-  const brandPrimary = process.env.ORIGO_PO_BRAND_PRIMARY ?? "#35BE92";
+  const brandPrimary = process.env.ORIGO_PO_BRAND_PRIMARY ?? "#263238";
   const logoImage = await loadBrandLogoImage();
 
   const brand = {
@@ -752,11 +762,11 @@ export async function GET(
     logoPngBytes: null,
     logoImage,
     primaryColor: brandPrimary,
-    waveColor: process.env.ORIGO_PO_BRAND_WAVE ?? "#059669",
+    waveColor: process.env.ORIGO_PO_BRAND_WAVE ?? "#8A4512",
     headerColor: process.env.ORIGO_PO_BRAND_HEADER ?? brandPrimary,
-    softColor: process.env.ORIGO_PO_BRAND_SURFACE ?? "#ECFFF7",
-    textColor: process.env.ORIGO_PO_BRAND_TEXT ?? "#0B2A1F",
-    mutedColor: process.env.ORIGO_PO_BRAND_MUTED ?? "#64748B",
+    softColor: process.env.ORIGO_PO_BRAND_SURFACE ?? "#F7E8D6",
+    textColor: process.env.ORIGO_PO_BRAND_TEXT ?? "#263238",
+    mutedColor: process.env.ORIGO_PO_BRAND_MUTED ?? "#6F7782",
     footerText:
       process.env.ORIGO_PO_BRAND_FOOTER ??
       "Documento generado por ORIGO - Vento Group",
@@ -792,10 +802,10 @@ export async function GET(
         businessName: brand.businessName,
         documentTitle: "Solicitud de compra",
         logoImage: brand.logoImage,
-        primaryColor: brand.primaryColor,
-        softColor: brand.softColor,
-        textColor: brand.textColor,
-        mutedColor: brand.mutedColor,
+        primaryColor: "#263238",
+        softColor: "#F7E8D6",
+        textColor: "#263238",
+        mutedColor: "#6F7782",
         footerText: brand.footerText,
       },
     });
