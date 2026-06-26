@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { createClient as createSupabaseServiceClient } from "@supabase/supabase-js";
+import sharp from "sharp";
 
 import { buildPurchaseOrderPdf } from "@/lib/purchase-orders/pdf";
 import { formatPurchaseOrderRef } from "@/lib/purchase-orders/reference";
@@ -29,10 +30,17 @@ function createServiceRoleClient() {
   });
 }
 
-async function loadBrandLogoPngBytes(): Promise<Uint8Array | null> {
+type PdfImage = {
+  bytes: Uint8Array;
+  width: number;
+  height: number;
+};
+
+async function loadBrandLogoImage(): Promise<PdfImage | null> {
   const envPath = String(process.env.ORIGO_PO_BRAND_LOGO_PATH ?? "").trim();
   const candidates = [
     envPath,
+    "public/apps/hub.svg",
     "public/logos/vento-group.png",
     "public/logos/vento-group.PNG",
   ].filter(Boolean);
@@ -43,7 +51,16 @@ async function loadBrandLogoPngBytes(): Promise<Uint8Array | null> {
       : path.join(process.cwd(), candidate.replace(/^[/\\]+/, ""));
     try {
       const file = await readFile(absolute);
-      return new Uint8Array(file);
+      const transformed = await sharp(file)
+        .flatten({ background: "#ffffff" })
+        .resize({ width: 220, height: 80, fit: "inside", withoutEnlargement: true })
+        .jpeg({ quality: 88, chromaSubsampling: "4:4:4" })
+        .toBuffer({ resolveWithObject: true });
+      return {
+        bytes: new Uint8Array(transformed.data),
+        width: transformed.info.width,
+        height: transformed.info.height,
+      };
     } catch {
       // Try next candidate.
     }
@@ -83,6 +100,7 @@ type SupplierPurchaseOrderPdfInput = {
   brand: {
     businessName: string;
     documentTitle: string;
+    logoImage: PdfImage | null;
     primaryColor: string;
     softColor: string;
     textColor: string;
@@ -165,7 +183,7 @@ function wrapText(text: string, maxWidth: number, size: number, bold = false): s
   return lines.length ? lines : [clean];
 }
 
-function buildPdfObjects(pageStreams: string[]): Uint8Array {
+function buildPdfObjects(pageStreams: string[], image?: PdfImage | null): Uint8Array {
   let nextId = 1;
   const catalogId = nextId++;
   const pagesId = nextId++;
@@ -178,6 +196,7 @@ function buildPdfObjects(pageStreams: string[]): Uint8Array {
 
   const fontRegularId = nextId++;
   const fontBoldId = nextId++;
+  const imageId = image ? nextId++ : null;
   const maxId = nextId - 1;
   const objects = new Array<string>(maxId + 1).fill("");
 
@@ -188,13 +207,20 @@ function buildPdfObjects(pageStreams: string[]): Uint8Array {
 
   for (const page of pagesMeta) {
     objects[page.contentId] = `<< /Length ${page.stream.length} >>\nstream\n${page.stream}\nendstream`;
+    const xObjectResources = imageId ? `/XObject << /Logo ${imageId} 0 R >> ` : "";
     objects[page.pageId] =
       `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${PAGE_WIDTH} ${PAGE_HEIGHT}] ` +
-      `/Contents ${page.contentId} 0 R /Resources << /Font << /F1 ${fontRegularId} 0 R /F2 ${fontBoldId} 0 R >> >> >>`;
+      `/Contents ${page.contentId} 0 R /Resources << /Font << /F1 ${fontRegularId} 0 R /F2 ${fontBoldId} 0 R >> ${xObjectResources}>> >>`;
   }
 
   objects[fontRegularId] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
   objects[fontBoldId] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>";
+  if (image && imageId) {
+    const hex = Array.from(image.bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    objects[imageId] =
+      `<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} ` +
+      `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter [/ASCIIHexDecode /DCTDecode] /Length ${hex.length + 1} >>\nstream\n${hex}>\nendstream`;
+  }
 
   let body = "";
   const offsets = new Array<number>(maxId + 1).fill(0);
@@ -259,6 +285,25 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
     commands.push(`${rgbToPdf(color)} RG\n0.8 w\n${x1.toFixed(2)} ${y1.toFixed(2)} m ${x2.toFixed(2)} ${y2.toFixed(2)} l S`);
   };
 
+  const polygon = (points: Array<[number, number]>, color: Rgb) => {
+    if (points.length < 3) return;
+    const [firstX, firstTop] = points[0];
+    const firstY = PAGE_HEIGHT - firstTop;
+    const pathCommands = points
+      .slice(1)
+      .map(([x, top]) => `${x.toFixed(2)} ${(PAGE_HEIGHT - top).toFixed(2)} l`)
+      .join(" ");
+    commands.push(`${rgbToPdf(color)} rg\n${firstX.toFixed(2)} ${firstY.toFixed(2)} m ${pathCommands} h f`);
+  };
+
+  const image = (opts: { x: number; top: number; width: number; height: number }) => {
+    if (!input.brand.logoImage) return;
+    const y = PAGE_HEIGHT - opts.top - opts.height;
+    commands.push(
+      `q\n${opts.width.toFixed(2)} 0 0 ${opts.height.toFixed(2)} ${opts.x.toFixed(2)} ${y.toFixed(2)} cm\n/Logo Do\nQ`
+    );
+  };
+
   const text = (opts: {
     value: string;
     x: number;
@@ -290,20 +335,60 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
   };
 
   const drawHeader = () => {
-    rect(0, 0, PAGE_WIDTH, 132, "f", primaryColor);
-    rect(PAGE_WIDTH - 160, 0, 160, 132, "f", parseHexColor(input.brand.softColor, [236, 255, 247]));
+    const darkGreen: Rgb = [16, 112, 88];
+    const mint: Rgb = [226, 250, 241];
+    const paleMint = parseHexColor(input.brand.softColor, [236, 255, 247]);
+
+    rect(0, 0, PAGE_WIDTH, 142, "f", white);
+    polygon(
+      [
+        [0, 0],
+        [390, 0],
+        [332, 142],
+        [0, 142],
+      ],
+      primaryColor
+    );
+    polygon(
+      [
+        [390, 0],
+        [PAGE_WIDTH, 0],
+        [PAGE_WIDTH, 142],
+        [332, 142],
+      ],
+      mint
+    );
+    polygon(
+      [
+        [0, 104],
+        [365, 72],
+        [332, 142],
+        [0, 142],
+      ],
+      darkGreen
+    );
+    polygon(
+      [
+        [448, 0],
+        [PAGE_WIDTH, 0],
+        [PAGE_WIDTH, 142],
+        [520, 142],
+      ],
+      paleMint
+    );
+    image({ x: PAGE_MARGIN, top: 26, width: 96, height: 34 });
     text({
-      value: input.brand.businessName,
+      value: input.brand.logoImage ? "" : input.brand.businessName,
       x: PAGE_MARGIN,
-      top: 36,
-      size: 12,
+      top: 40,
+      size: 11,
       font: "F2",
       color: white,
     });
     text({
       value: input.brand.documentTitle,
       x: PAGE_MARGIN,
-      top: 62,
+      top: 76,
       size: 24,
       font: "F2",
       color: white,
@@ -311,14 +396,14 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
     text({
       value: input.orderRef,
       x: PAGE_MARGIN,
-      top: 90,
+      top: 104,
       size: 11,
       color: white,
     });
     text({
       value: "Confirmacion de disponibilidad",
       x: PAGE_WIDTH - PAGE_MARGIN,
-      top: 52,
+      top: 62,
       size: 11,
       font: "F2",
       color: textColor,
@@ -327,12 +412,12 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
     text({
       value: "Por favor revisa cantidades y fecha esperada.",
       x: PAGE_WIDTH - PAGE_MARGIN,
-      top: 74,
+      top: 84,
       size: 9,
       color: mutedColor,
       align: "right",
     });
-    cursorTop = 154;
+    cursorTop = 166;
   };
 
   const drawSummary = () => {
@@ -548,7 +633,7 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
     );
   }
 
-  return buildPdfObjects(pages.map((page) => page.join("\n")));
+  return buildPdfObjects(pages.map((page) => page.join("\n")), input.brand.logoImage);
 }
 
 export const runtime = "nodejs";
@@ -631,13 +716,14 @@ export async function GET(
   });
 
   const brandPrimary = process.env.ORIGO_PO_BRAND_PRIMARY ?? "#35BE92";
-  const logoPngBytes = hasValidToken ? null : await loadBrandLogoPngBytes();
+  const logoImage = await loadBrandLogoImage();
 
   const brand = {
     businessName: process.env.ORIGO_PO_BRAND_NAME ?? "Vento Group",
     documentTitle: process.env.ORIGO_PO_BRAND_TITLE ?? "Orden de compra",
     logoText: process.env.ORIGO_PO_BRAND_LOGO_TEXT ?? "VG",
-    logoPngBytes,
+    logoPngBytes: null,
+    logoImage,
     primaryColor: brandPrimary,
     waveColor: process.env.ORIGO_PO_BRAND_WAVE ?? "#059669",
     headerColor: process.env.ORIGO_PO_BRAND_HEADER ?? brandPrimary,
@@ -678,6 +764,7 @@ export async function GET(
       brand: {
         businessName: brand.businessName,
         documentTitle: "Solicitud de compra",
+        logoImage: brand.logoImage,
         primaryColor: brand.primaryColor,
         softColor: brand.softColor,
         textColor: brand.textColor,
