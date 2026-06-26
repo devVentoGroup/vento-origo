@@ -55,6 +55,7 @@ async function loadBrandLogoImage(): Promise<PdfImage | null> {
       const file = await readFile(absolute);
       const transformed = await sharp(file)
         .ensureAlpha()
+        .tint("#ffffff")
         .raw()
         .toBuffer({ resolveWithObject: true });
       const pixelCount = transformed.info.width * transformed.info.height;
@@ -365,31 +366,31 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
     const mint: Rgb = [226, 250, 241];
     const paleMint = parseHexColor(input.brand.softColor, [236, 255, 247]);
 
-    rect(0, 0, PAGE_WIDTH, 142, "f", white);
+    rect(0, 0, PAGE_WIDTH, 158, "f", white);
     polygon(
       [
         [0, 0],
-        [390, 0],
-        [332, 142],
-        [0, 142],
+        [392, 0],
+        [326, 158],
+        [0, 158],
       ],
       primaryColor
     );
     polygon(
       [
-        [390, 0],
+        [392, 0],
         [PAGE_WIDTH, 0],
-        [PAGE_WIDTH, 142],
-        [332, 142],
+        [PAGE_WIDTH, 158],
+        [326, 158],
       ],
       mint
     );
     polygon(
       [
-        [0, 104],
-        [365, 72],
-        [332, 142],
-        [0, 142],
+        [0, 112],
+        [366, 82],
+        [326, 158],
+        [0, 158],
       ],
       darkGreen
     );
@@ -397,12 +398,12 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
       [
         [448, 0],
         [PAGE_WIDTH, 0],
-        [PAGE_WIDTH, 142],
-        [520, 142],
+        [PAGE_WIDTH, 158],
+        [524, 158],
       ],
       paleMint
     );
-    image({ x: PAGE_MARGIN, top: 22, maxWidth: 86, maxHeight: 46 });
+    image({ x: PAGE_MARGIN, top: 24, maxWidth: 82, maxHeight: 52 });
     text({
       value: input.brand.logoImage ? "" : input.brand.businessName,
       x: PAGE_MARGIN,
@@ -414,7 +415,7 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
     text({
       value: input.brand.documentTitle,
       x: PAGE_MARGIN,
-      top: 76,
+      top: 96,
       size: 24,
       font: "F2",
       color: white,
@@ -422,14 +423,14 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
     text({
       value: input.orderRef,
       x: PAGE_MARGIN,
-      top: 104,
+      top: 124,
       size: 11,
       color: white,
     });
     text({
       value: "Confirmacion de disponibilidad",
       x: PAGE_WIDTH - PAGE_MARGIN,
-      top: 62,
+      top: 72,
       size: 11,
       font: "F2",
       color: textColor,
@@ -438,12 +439,12 @@ function buildSupplierPurchaseOrderPdf(input: SupplierPurchaseOrderPdfInput): Ui
     text({
       value: "Por favor revisa cantidades y fecha esperada.",
       x: PAGE_WIDTH - PAGE_MARGIN,
-      top: 84,
+      top: 96,
       size: 9,
       color: mutedColor,
       align: "right",
     });
-    cursorTop = 166;
+    cursorTop = 182;
   };
 
   const drawSummary = () => {
