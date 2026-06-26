@@ -617,12 +617,6 @@ export function ReceiptForm({
     return products.filter((product) => Array.isArray(product.supplier_ids) && product.supplier_ids.includes(supplierId));
   }, [products, productsHaveSupplierLinks, supplierId]);
 
-  const productLabelById = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const product of products) map.set(product.id, formatProductOptionLabel(product));
-    return map;
-  }, [products]);
-
   const positionById = useMemo(() => {
     return new Map(locationPositions.map((position) => [position.id, position]));
   }, [locationPositions]);
@@ -928,9 +922,10 @@ export function ReceiptForm({
     const hasAtLeastOneValidLine = lines.some((line) => {
       const qty = Number(line.quantity || 0);
       const factor = Number(line.conversionFactorToStock || 0);
-      const hasPresentationSnapshot = isDirectReceipt
-        ? Boolean(line.presentationId) && Boolean(line.inputUnitLabel) && factor > 0
-        : Boolean(line.purchaseOrderItemId) && Boolean(line.inputUnitLabel) && factor > 0;
+      const isPurchaseOrderLine = isPurchaseOrderReceipt && Boolean(line.purchaseOrderItemId);
+      const hasPresentationSnapshot = isPurchaseOrderLine
+        ? Boolean(line.inputUnitLabel) && factor > 0
+        : Boolean(line.presentationId) && Boolean(line.inputUnitLabel) && factor > 0;
 
       return Boolean(line.productId) && hasPresentationSnapshot && Number.isFinite(qty) && qty > 0;
     });
@@ -953,12 +948,8 @@ export function ReceiptForm({
         nextErrors[`line_${index}_presentation`] = "Define una presentación válida.";
       }
 
-      if (isDirectReceipt && !line.presentationId) {
+      if (!line.purchaseOrderItemId && !line.presentationId) {
         nextErrors[`line_${index}_presentation`] = "Selecciona una presentación manual activa.";
-      }
-
-      if (isPurchaseOrderReceipt && !line.purchaseOrderItemId) {
-        nextErrors[`line_${index}_presentation`] = "La línea no pertenece a la orden de compra seleccionada.";
       }
 
       const product = line.productId ? productMap.get(line.productId) : null;
@@ -1007,7 +998,7 @@ export function ReceiptForm({
               </h2>
               <p className="mt-1 max-w-3xl text-sm leading-6 text-[var(--ui-muted)]">
                 {isPurchaseOrderReceipt
-                  ? "Carga los insumos pendientes de la OC, confirma cantidades reales y envía cada línea a su LOC y ubicación interna."
+                  ? "Carga los insumos pendientes de la OC, confirma cantidades reales y agrega extras solo si llegaron por urgencia."
                   : "Recibe compras sin OC sin tratarlas como error operativo. Selecciona proveedor, insumos, presentación, costo e inventario destino."}
               </p>
             </div>
@@ -1143,7 +1134,7 @@ export function ReceiptForm({
             <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950">
               <div className="font-semibold">Recepción vinculada a OC</div>
               <p className="mt-1">
-                Los productos y presentaciones vienen desde la orden seleccionada. Ajusta cantidad, costo real, impuestos y destino físico.
+                Los productos de la OC se cargan automáticamente. Si llegó un insumo adicional por urgencia, agrégalo como extra fuera de OC.
               </p>
             </div>
           )}
@@ -1158,11 +1149,9 @@ export function ReceiptForm({
               </p>
             </div>
 
-            {!isPurchaseOrderReceipt ? (
-              <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={addLine}>
-                + Agregar insumo
-              </button>
-            ) : null}
+            <button type="button" className="ui-btn ui-btn--ghost ui-btn--sm" onClick={addLine}>
+              {isPurchaseOrderReceipt ? "+ Agregar extra fuera de OC" : "+ Agregar insumo"}
+            </button>
           </div>
 
           {supplierId && !productsHaveSupplierLinks ? (
@@ -1192,6 +1181,7 @@ export function ReceiptForm({
               const linePositions = positionsByLocationId.get(line.locationId) ?? [];
               const hasInternalPositions = linePositions.length > 0;
               const productPresentations = getUniquePresentations(product?.presentations);
+              const isPurchaseOrderLine = isPurchaseOrderReceipt && Boolean(line.purchaseOrderItemId);
 
               return (
                 <div key={`line-${index}`} className="rounded-[1.5rem] border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-4">
@@ -1220,7 +1210,7 @@ export function ReceiptForm({
                         type="button"
                         className="ui-btn ui-btn--ghost ui-btn--sm"
                         onClick={() => removeLine(index)}
-                        disabled={lines.length <= 1 || isPurchaseOrderReceipt}
+                        disabled={lines.length <= 1 || isPurchaseOrderLine}
                       >
                         Quitar
                       </button>
@@ -1240,7 +1230,7 @@ export function ReceiptForm({
                         </div>
                       </div>
 
-                      {isPurchaseOrderReceipt && product ? (
+                      {isPurchaseOrderLine && product ? (
                         <div className="mt-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950">
                           <div className="font-semibold">{formatProductOptionLabel(product)}</div>
                           <div className="mt-1 text-xs">
@@ -1341,14 +1331,14 @@ export function ReceiptForm({
                       </div>
 
                       <div className="mt-3 grid gap-3">
-                        {!isPurchaseOrderReceipt && product && productPresentations.length === 0 ? (
+                        {!isPurchaseOrderLine && product && productPresentations.length === 0 ? (
                           <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-950">
                             Este insumo no tiene presentaciones manuales activas. Solicita una nueva presentación
                             para revisión de maestro de datos antes de registrarlo.
                           </div>
                         ) : null}
 
-                        {productPresentations.length > 0 && !isPurchaseOrderReceipt ? (
+                        {productPresentations.length > 0 && !isPurchaseOrderLine ? (
                           <label>
                             <span className="ui-label">Presentación existente</span>
                             <select

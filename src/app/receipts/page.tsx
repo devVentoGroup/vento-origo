@@ -607,7 +607,7 @@ async function createReceipt(formData: FormData) {
       const poItemId = poItemIds[index] || "";
       const poItem = poItemId ? poItemMap.get(poItemId) : null;
 
-      if (purchaseOrderId) {
+      if (purchaseOrderId && poItemId) {
         if (!poItem) {
           redirect("/receipts?error=" + encodeURIComponent("Hay una linea que no pertenece a la orden de compra seleccionada."));
         }
@@ -622,7 +622,7 @@ async function createReceipt(formData: FormData) {
         ? selectedPresentationById.get(selectedPresentationId)
         : null;
 
-      if (!purchaseOrderId) {
+      if (!poItemId) {
         if (!selectedPresentation || selectedPresentation.product_id !== productId) {
           redirect(
             "/receipts?error=" +
@@ -633,19 +633,19 @@ async function createReceipt(formData: FormData) {
 
       const fallbackStockUnitCode = String(product?.stock_unit_code ?? product?.unit ?? "un").trim().toLowerCase();
 
-      const stockUnitCode = purchaseOrderId
+      const stockUnitCode = poItemId
         ? String(poItem?.stock_unit_code ?? poItem?.input_unit_code ?? fallbackStockUnitCode).trim().toLowerCase()
         : fallbackStockUnitCode || "un";
 
-      const inputUnitCode = purchaseOrderId
+      const inputUnitCode = poItemId
         ? String(poItem?.input_unit_code ?? stockUnitCode).trim().toLowerCase()
         : String(selectedPresentation?.input_unit_code ?? stockUnitCode).trim().toLowerCase();
 
-      const inputUnitLabel = purchaseOrderId
+      const inputUnitLabel = poItemId
         ? String(poItem?.input_unit_label ?? poItem?.unit ?? inputUnitCode).trim()
         : String(selectedPresentation?.label ?? inputUnitCode).trim();
 
-      const conversionFactorToStockRaw = purchaseOrderId
+      const conversionFactorToStockRaw = poItemId
         ? Number(poItem?.conversion_factor_to_stock ?? 0)
         : Number(selectedPresentation?.qty_in_stock_unit ?? 0);
 
