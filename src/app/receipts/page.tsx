@@ -172,6 +172,10 @@ type EntryRow = {
   created_at: string | null;
 };
 
+type ReversalRpcError = {
+  message?: string;
+};
+
 type MasterDataRequestKind = "new_product" | "new_presentation";
 
 type MasterDataRequestPayload = {
@@ -1243,6 +1247,43 @@ async function createReceipt(formData: FormData) {
   redirect("/receipts?ok=created");
 }
 
+async function reverseReceipt(formData: FormData) {
+  "use server";
+
+  const supabase = await createClient();
+  const { data: userRes } = await supabase.auth.getUser();
+  const user = userRes.user ?? null;
+  if (!user) {
+    redirect("/login?returnTo=/receipts");
+  }
+
+  const entryId = asText(formData.get("entry_id"));
+  const correctionComment = asText(formData.get("correction_comment"));
+
+  if (!entryId) {
+    redirect("/receipts?error=" + encodeURIComponent("Recepción requerida para reversar."));
+  }
+
+  if (!correctionComment) {
+    redirect("/receipts?error=" + encodeURIComponent("El comentario de reversión es obligatorio."));
+  }
+
+  const { error } = await supabase.rpc("origo_reverse_inventory_entry", {
+    p_entry_id: entryId,
+    p_comment: correctionComment,
+  });
+
+  if (error) {
+    const reversalError = error as ReversalRpcError;
+    redirect(
+      "/receipts?error=" +
+        encodeURIComponent(reversalError.message ?? "No se pudo reversar la recepción.")
+    );
+  }
+
+  redirect("/receipts?ok=reversed");
+}
+
 export default async function ReceiptsPage({
   searchParams,
 }: {
@@ -1666,7 +1707,11 @@ export default async function ReceiptsPage({
             Ver ordenes de compra
           </Link>
         </div>
-        {okMsg ? <div className="ui-alert ui-alert--success">Recepcion registrada correctamente.</div> : null}
+        {okMsg ? (
+          <div className="ui-alert ui-alert--success">
+            {okMsg === "reversed" ? "Recepción reversada correctamente." : "Recepción registrada correctamente."}
+          </div>
+        ) : null}
       </div>
 
       <ReceiptForm
@@ -1702,6 +1747,7 @@ export default async function ReceiptsPage({
                 <th className="py-2 pr-3">Factura</th>
                 <th className="py-2 pr-3">Tipo</th>
                 <th className="py-2 pr-3">Estado</th>
+                <th className="py-2 pr-3">Acciones</th>
               </tr>
             </thead>
             <tbody>
@@ -1727,11 +1773,29 @@ export default async function ReceiptsPage({
                     ) : null}
                   </td>
                   <td className="py-2 pr-3">{entryRow.status ?? "-"}</td>
+                  <td className="py-2 pr-3">
+                    {entryRow.status === "received" ? (
+                      <form action={reverseReceipt} className="flex min-w-[260px] flex-col gap-2">
+                        <input type="hidden" name="entry_id" value={entryRow.id} />
+                        <input
+                          name="correction_comment"
+                          className="ui-input h-9 text-xs"
+                          placeholder="Comentario obligatorio"
+                          required
+                        />
+                        <button type="submit" className="ui-btn ui-btn--ghost ui-btn--sm">
+                          Reversar
+                        </button>
+                      </form>
+                    ) : (
+                      <span className="text-xs text-[var(--ui-muted)]">Sin acciones</span>
+                    )}
+                  </td>
                 </tr>
               ))}
               {!entryRows.length ? (
                 <tr>
-                  <td className="py-4 text-[var(--ui-muted)]" colSpan={5}>
+                  <td className="py-4 text-[var(--ui-muted)]" colSpan={6}>
                     No hay recepciones registradas.
                   </td>
                 </tr>
