@@ -124,6 +124,7 @@ type ReceiptLine = {
   unitCost: string;
   costInputMode: CostInputMode;
   taxRate: string;
+  icuiRate: string;
   lotNumber: string;
   expiryDate: string;
   notes: string;
@@ -189,6 +190,7 @@ function makeEmptyLine(defaultLocationId: string): ReceiptLine {
     unitCost: "",
     costInputMode: "net",
     taxRate: "0",
+    icuiRate: "0",
     lotNumber: "",
     expiryDate: "",
     notes: "",
@@ -216,6 +218,7 @@ function buildInitialRows(params: {
     unitCost: row.unitCost > 0 ? String(row.unitCost) : "",
     costInputMode: row.costInputMode === "gross" ? "gross" : "net",
     taxRate: row.taxRate !== undefined && row.taxRate !== null ? String(row.taxRate) : "0",
+    icuiRate: "0",
     lotNumber: row.lotNumber ?? "",
     expiryDate: row.expiryDate ?? "",
     notes: row.notes ?? "",
@@ -242,6 +245,7 @@ function normalizeStoredLines(
     unitCost: line.unitCost ?? "",
     costInputMode: (line.costInputMode === "gross" ? "gross" : "net") as CostInputMode,
     taxRate: line.taxRate ?? "0",
+    icuiRate: line.icuiRate ?? "0",
     lotNumber: line.lotNumber ?? "",
     expiryDate: line.expiryDate ?? "",
     notes: line.notes ?? "",
@@ -425,29 +429,39 @@ function computeRequestInputUnitCode(request: MasterDataRequestDraft): string {
 function computeLineCost(line: ReceiptLine) {
   const inputQty = clampNonNegative(asNumber(line.quantity));
   const inputUnitCost = clampNonNegative(asNumber(line.unitCost));
-  const taxRate = clampNonNegative(asNumber(line.taxRate));
+  const ivaRate = clampNonNegative(asNumber(line.taxRate));
+  const icuiRate = clampNonNegative(asNumber(line.icuiRate));
+  const totalTaxRate = ivaRate + icuiRate;
   const conversionFactorToStock = clampNonNegative(asNumber(line.conversionFactorToStock)) || 1;
 
   const netUnitCost =
-    line.costInputMode === "gross" && taxRate > 0
-      ? inputUnitCost / (1 + taxRate / 100)
+    line.costInputMode === "gross" && totalTaxRate > 0
+      ? inputUnitCost / (1 + totalTaxRate / 100)
       : inputUnitCost;
+
+  const ivaUnitAmount = netUnitCost * (ivaRate / 100);
+  const icuiUnitAmount = netUnitCost * (icuiRate / 100);
 
   const grossUnitCost =
     line.costInputMode === "gross"
       ? inputUnitCost
-      : inputUnitCost * (1 + taxRate / 100);
+      : netUnitCost + ivaUnitAmount + icuiUnitAmount;
 
   const stockQty = inputQty * conversionFactorToStock;
   const stockUnitCost = conversionFactorToStock > 0 ? netUnitCost / conversionFactorToStock : 0;
   const netTotal = netUnitCost * inputQty;
-  const grossTotal = grossUnitCost * inputQty;
-  const taxAmount = grossTotal - netTotal;
+  const ivaAmount = ivaUnitAmount * inputQty;
+  const icuiAmount = icuiUnitAmount * inputQty;
+  const taxAmount = ivaAmount + icuiAmount;
+  const grossTotal = netTotal + taxAmount;
 
   return {
     inputQty,
     inputUnitCost,
-    taxRate,
+    taxRate: ivaRate,
+    ivaRate,
+    icuiRate,
+    totalTaxRate,
     conversionFactorToStock,
     stockQty,
     netUnitCost,
@@ -455,6 +469,8 @@ function computeLineCost(line: ReceiptLine) {
     stockUnitCost,
     netTotal,
     grossTotal,
+    ivaAmount,
+    icuiAmount,
     taxAmount,
     taxIncluded: line.costInputMode === "gross",
   };
@@ -1505,7 +1521,7 @@ export function ReceiptForm({
 
                         <div className="grid gap-3 sm:grid-cols-2">
                           <label className="flex flex-col">
-                            <span className="ui-label min-h-[32px]">Presentación recibida</span>
+                            <span className="ui-label">Presentación recibida</span>
                             <input
                               className="ui-input mt-1"
                               placeholder="Ej: Caja x 12"
@@ -1516,22 +1532,7 @@ export function ReceiptForm({
                           </label>
 
                           <label className="flex flex-col">
-                            <span className="ui-label min-h-[32px]">Factor a stock</span>
-                            <input
-                              className="ui-input mt-1"
-                              type="number"
-                              step="0.000001"
-                              min="0.000001"
-                              value={line.conversionFactorToStock}
-                              disabled
-                              onChange={(e) => updateLine(index, { conversionFactorToStock: e.target.value })}
-                            />
-                          </label>
-                        </div>
-
-                        <div className="grid gap-3 sm:grid-cols-2">
-                          <label className="flex flex-col">
-                            <span className="ui-label min-h-[32px]">Cantidad recibida</span>
+                            <span className="ui-label">Cantidad recibida</span>
                             <input
                               name="item_quantity_received"
                               className="ui-input mt-1"
@@ -1542,15 +1543,6 @@ export function ReceiptForm({
                               onChange={(e) => updateLine(index, { quantity: e.target.value })}
                             />
                           </label>
-
-                          <div className="flex min-h-[78px] flex-col justify-center rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3 text-xs text-[var(--ui-muted)]">
-                            <div className="font-semibold text-[var(--ui-text)]">Conversión</div>
-                            <div className="mt-1">
-                              {cost.inputQty > 0
-                                ? `${formatQty(cost.inputQty)} ${inputUnitLabel} = ${formatQty(cost.stockQty)} ${stockUnitCode}`
-                                : `Cantidad en ${inputUnitLabel || stockUnitCode}.`}
-                            </div>
-                          </div>
                         </div>
 
                         {!isPurchaseOrderReceipt ? (
@@ -1588,7 +1580,7 @@ export function ReceiptForm({
                         El costo de inventario se calcula con neto sin impuesto.
                       </div>
 
-                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <div className="mt-3 grid gap-3 sm:grid-cols-3">
                         <label className="sm:col-span-2">
                           <span className="ui-label">Precio digitado</span>
                           <input
@@ -1602,19 +1594,19 @@ export function ReceiptForm({
                         </label>
 
                         <label>
-                          <span className="ui-label">Tipo de precio</span>
+                          <span className="ui-label">El precio digitado</span>
                           <select
                             className="ui-input mt-1"
                             value={line.costInputMode}
                             onChange={(e) => updateLine(index, { costInputMode: e.target.value === "gross" ? "gross" : "net" })}
                           >
-                            <option value="net">Sin impuesto</option>
-                            <option value="gross">Con impuesto incluido</option>
+                            <option value="net">No incluye impuestos</option>
+                            <option value="gross">Ya incluye impuestos</option>
                           </select>
                         </label>
 
                         <label>
-                          <span className="ui-label">IVA / impuesto %</span>
+                          <span className="ui-label">IVA %</span>
                           <input
                             className="ui-input mt-1"
                             type="number"
@@ -1624,21 +1616,33 @@ export function ReceiptForm({
                             onChange={(e) => updateLine(index, { taxRate: e.target.value })}
                           />
                         </label>
+
+                        <label>
+                          <span className="ui-label">ICUI %</span>
+                          <input
+                            className="ui-input mt-1"
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={line.icuiRate}
+                            onChange={(e) => updateLine(index, { icuiRate: e.target.value })}
+                          />
+                        </label>
                       </div>
 
                       <div className="mt-3 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3 text-xs">
                         <div className="grid gap-2 sm:grid-cols-2">
                           <div>
-                            <span className="text-[var(--ui-muted)]">Neto presentación</span>
-                            <div className="font-bold text-[var(--ui-text)]">{formatAmount(cost.netUnitCost)}</div>
+                            <span className="text-[var(--ui-muted)]">Base sin impuestos</span>
+                            <div className="font-bold text-[var(--ui-text)]">{formatAmount(cost.netTotal)}</div>
                           </div>
                           <div>
-                            <span className="text-[var(--ui-muted)]">Bruto presentación</span>
-                            <div className="font-bold text-[var(--ui-text)]">{formatAmount(cost.grossUnitCost)}</div>
+                            <span className="text-[var(--ui-muted)]">IVA</span>
+                            <div className="font-bold text-[var(--ui-text)]">{formatAmount(cost.ivaAmount)}</div>
                           </div>
                           <div>
-                            <span className="text-[var(--ui-muted)]">Costo stock</span>
-                            <div className="font-bold text-[var(--ui-text)]">{formatAmount(cost.stockUnitCost)} / {stockUnitCode}</div>
+                            <span className="text-[var(--ui-muted)]">ICUI</span>
+                            <div className="font-bold text-[var(--ui-text)]">{formatAmount(cost.icuiAmount)}</div>
                           </div>
                           <div>
                             <span className="text-[var(--ui-muted)]">Total línea</span>
@@ -1651,6 +1655,11 @@ export function ReceiptForm({
                       <input type="hidden" name="item_cost_input_mode" value={line.costInputMode} />
                       <input type="hidden" name="item_tax_included" value={cost.taxIncluded ? "true" : "false"} />
                       <input type="hidden" name="item_tax_rate" value={String(cost.taxRate)} />
+                      <input type="hidden" name="item_iva_rate" value={String(cost.ivaRate)} />
+                      <input type="hidden" name="item_icui_rate" value={String(cost.icuiRate)} />
+                      <input type="hidden" name="item_iva_amount" value={String(cost.ivaAmount)} />
+                      <input type="hidden" name="item_icui_amount" value={String(cost.icuiAmount)} />
+                      <input type="hidden" name="item_total_tax_rate" value={String(cost.totalTaxRate)} />
                       <input type="hidden" name="item_net_unit_cost" value={String(cost.netUnitCost)} />
                       <input type="hidden" name="item_gross_unit_cost" value={String(cost.grossUnitCost)} />
                       <input type="hidden" name="item_net_total_cost" value={String(cost.netTotal)} />

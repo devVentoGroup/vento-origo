@@ -738,6 +738,21 @@ async function createReceipt(formData: FormData) {
   const taxRates = formData
     .getAll("item_tax_rate")
     .map((value) => asNumber(String(value).trim()));
+  const ivaRates = formData
+    .getAll("item_iva_rate")
+    .map((value) => asNumber(String(value).trim()));
+  const icuiRates = formData
+    .getAll("item_icui_rate")
+    .map((value) => asNumber(String(value).trim()));
+  const ivaAmounts = formData
+    .getAll("item_iva_amount")
+    .map((value) => asNumber(String(value).trim()));
+  const icuiAmounts = formData
+    .getAll("item_icui_amount")
+    .map((value) => asNumber(String(value).trim()));
+  const totalTaxRates = formData
+    .getAll("item_total_tax_rate")
+    .map((value) => asNumber(String(value).trim()));
   const netUnitCosts = formData
     .getAll("item_net_unit_cost")
     .map((value) => asNumber(String(value).trim()));
@@ -866,7 +881,9 @@ async function createReceipt(formData: FormData) {
       const quantityReceived = roundQuantity(inputQty * conversionFactorToStock, 6);
       const defaultCost = Number(product?.cost ?? 0);
       const inputUnitCostRaw = Number(unitCosts[index] ?? poItem?.unit_cost ?? 0);
-      const taxRate = Math.max(0, Number(taxRates[index] ?? 0));
+      const ivaRate = Math.max(0, Number(ivaRates[index] ?? taxRates[index] ?? 0));
+      const icuiRate = Math.max(0, Number(icuiRates[index] ?? 0));
+      const taxRate = Math.max(0, Number(totalTaxRates[index] ?? ivaRate + icuiRate));
       const taxIncluded = Boolean(taxIncludedValues[index]);
       const costInputMode = costInputModes[index] === "gross" ? "gross" : "net";
 
@@ -938,6 +955,11 @@ async function createReceipt(formData: FormData) {
         line_total_cost: netTotalCost,
         tax_included: taxIncluded,
         tax_rate: taxRate,
+        iva_rate: ivaRate,
+        iva_amount: Number(ivaAmounts[index] ?? 0),
+        icui_rate: icuiRate,
+        icui_amount: Number(icuiAmounts[index] ?? 0),
+        total_tax_rate: taxRate,
         cost_input_mode: costInputMode,
         net_unit_cost: computedNetUnitCost > 0 ? roundQuantity(computedNetUnitCost, 6) : 0,
         gross_unit_cost: computedGrossUnitCost > 0 ? roundQuantity(computedGrossUnitCost, 6) : 0,
@@ -1130,6 +1152,11 @@ async function createReceipt(formData: FormData) {
     line_total_cost: item.line_total_cost,
     tax_included: item.tax_included,
     tax_rate: item.tax_rate,
+    iva_rate: item.iva_rate,
+    iva_amount: item.iva_amount,
+    icui_rate: item.icui_rate,
+    icui_amount: item.icui_amount,
+    total_tax_rate: item.total_tax_rate,
     cost_input_mode: item.cost_input_mode,
     net_unit_cost: item.net_unit_cost,
     gross_unit_cost: item.gross_unit_cost,
