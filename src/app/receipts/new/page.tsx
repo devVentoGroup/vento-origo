@@ -27,6 +27,8 @@ const OPERATIONAL_RECEIPT_LOCATION_ORDER = new Map(
 const RECEIPT_CATALOG_INVENTORY_KINDS = ["ingredient", "finished", "resale", "packaging"];
 const RECEIPT_CATALOG_PAGE_SIZE = 1000;
 const PRODUCT_RELATION_BATCH_SIZE = 200;
+const RECEIPT_ACTION_WINDOW_MINUTES = 30;
+const RECEIPT_ACTION_WINDOW_MS = RECEIPT_ACTION_WINDOW_MINUTES * 60 * 1000;
 
 type SearchParams = {
   error?: string;
@@ -428,6 +430,37 @@ function safeDecode(raw: string | undefined) {
   }
 }
 
+function getReceiptActionWindowState(createdAt: string | null | undefined, nowMs = Date.now()) {
+  const createdMs = createdAt ? new Date(createdAt).getTime() : Number.NaN;
+
+  if (!Number.isFinite(createdMs)) {
+    return {
+      isOpen: false,
+      label: "Ventana cerrada",
+      minutesRemaining: 0,
+    };
+  }
+
+  const ageMs = Math.max(0, nowMs - createdMs);
+  const remainingMs = RECEIPT_ACTION_WINDOW_MS - ageMs;
+
+  if (remainingMs <= 0) {
+    return {
+      isOpen: false,
+      label: "Corrección cerrada",
+      minutesRemaining: 0,
+    };
+  }
+
+  const minutesRemaining = Math.max(1, Math.ceil(remainingMs / 60000));
+
+  return {
+    isOpen: true,
+    label: `Quedan ${minutesRemaining} min`,
+    minutesRemaining,
+  };
+}
+
 function buildReceiptsUrl(params: { siteId?: string; ok?: string; error?: string; purchaseOrderId?: string }) {
   const search = new URLSearchParams();
   if (params.siteId) search.set("site_id", params.siteId);
@@ -640,7 +673,7 @@ async function createReceipt(formData: FormData) {
       .limit(1);
 
     if (masterDataTableErr) {
-redirect(createErrorUrl("No se pudieron preparar las solicitudes de maestro de datos. Aplica la migración product_master_review_requests antes de usar esta acción."));
+      redirect(createErrorUrl("No se pudieron preparar las solicitudes de maestro de datos. Aplica la migración product_master_review_requests antes de usar esta acción."));
     }
   }
 
@@ -996,7 +1029,7 @@ redirect(createErrorUrl("No se pudieron preparar las solicitudes de maestro de d
 
     const { data: originalEntry, error: originalEntryErr } = await supabase
       .from("inventory_entries")
-      .select("id,site_id,status,source_app")
+      .select("id,site_id,status,source_app,created_at")
       .eq("id", correctionEntryId)
       .maybeSingle();
 
@@ -1010,6 +1043,16 @@ redirect(createErrorUrl("No se pudieron preparar las solicitudes de maestro de d
 
     if (String(originalEntry.status ?? "") !== "received") {
       redirect(createErrorUrl("Solo se pueden corregir recepciones en estado Recibida."));
+    }
+
+    const actionWindow = getReceiptActionWindowState(String(originalEntry.created_at ?? ""));
+
+    if (!actionWindow.isOpen) {
+      redirect(
+        createErrorUrl(
+          `La ventana para corregir esta recepción ya cerró. Máximo ${RECEIPT_ACTION_WINDOW_MINUTES} minutos desde su creación.`
+        )
+      );
     }
 
     const { error: reverseForCorrectionErr } = await supabase.rpc("origo_reverse_inventory_entry", {
@@ -1328,7 +1371,7 @@ redirect(createErrorUrl("No se pudieron preparar las solicitudes de maestro de d
       .insert(requestRows);
 
     if (requestInsertErr) {
-redirect(createErrorUrl("La recepcion se registro, pero no se pudieron guardar las solicitudes de maestro de datos: " + requestInsertErr.message));
+      redirect(createErrorUrl("La recepcion se registro, pero no se pudieron guardar las solicitudes de maestro de datos: " + requestInsertErr.message));
     }
   }
 
@@ -1644,6 +1687,17 @@ export default async function ReceiptsPage({
 
     if (String(correctionEntry.status ?? "") !== "received") {
       redirect(buildReceiptsUrl({ siteId, error: "Solo se pueden corregir recepciones en estado Recibida." }));
+    }
+
+    const actionWindow = getReceiptActionWindowState(String(correctionEntry.created_at ?? ""));
+
+    if (!actionWindow.isOpen) {
+      redirect(
+        buildReceiptsUrl({
+          siteId,
+          error: `La ventana para corregir esta recepción ya cerró. Máximo ${RECEIPT_ACTION_WINDOW_MINUTES} minutos desde su creación.`,
+        })
+      );
     }
 
     const { data: correctionItemsData, error: correctionItemsErr } = await supabase

@@ -8,6 +8,8 @@ export const dynamic = "force-dynamic";
 
 const APP_ID = "origo";
 const RECEIPTS_PERMISSION = "procurement.receipts";
+const RECEIPT_ACTION_WINDOW_MINUTES = 30;
+const RECEIPT_ACTION_WINDOW_MS = RECEIPT_ACTION_WINDOW_MINUTES * 60 * 1000;
 
 type SearchParams = {
   ok?: string;
@@ -89,6 +91,37 @@ function formatEntryMode(entryMode: string | null) {
   }
 }
 
+function getReceiptActionWindowState(createdAt: string | null | undefined, nowMs = Date.now()) {
+  const createdMs = createdAt ? new Date(createdAt).getTime() : Number.NaN;
+
+  if (!Number.isFinite(createdMs)) {
+    return {
+      isOpen: false,
+      label: "Ventana cerrada",
+      minutesRemaining: 0,
+    };
+  }
+
+  const ageMs = Math.max(0, nowMs - createdMs);
+  const remainingMs = RECEIPT_ACTION_WINDOW_MS - ageMs;
+
+  if (remainingMs <= 0) {
+    return {
+      isOpen: false,
+      label: "Corrección cerrada",
+      minutesRemaining: 0,
+    };
+  }
+
+  const minutesRemaining = Math.max(1, Math.ceil(remainingMs / 60000));
+
+  return {
+    isOpen: true,
+    label: `Quedan ${minutesRemaining} min`,
+    minutesRemaining,
+  };
+}
+
 function buildReceiptsUrl(params: { siteId?: string; ok?: string; historyError?: string }) {
   const search = new URLSearchParams();
   if (params.siteId) search.set("site_id", params.siteId);
@@ -132,6 +165,35 @@ async function reverseReceipt(formData: FormData) {
 
   if (!correctionComment) {
     redirect(buildReceiptsUrl({ siteId, historyError: "El comentario de reversión es obligatorio." }));
+  }
+
+  const { data: entryToReverse, error: entryToReverseErr } = await supabase
+    .from("inventory_entries")
+    .select("id,site_id,status,created_at")
+    .eq("id", entryId)
+    .maybeSingle();
+
+  if (entryToReverseErr) {
+    redirect(buildReceiptsUrl({ siteId, historyError: entryToReverseErr.message }));
+  }
+
+  if (!entryToReverse || String(entryToReverse.site_id ?? "") !== siteId) {
+    redirect(buildReceiptsUrl({ siteId, historyError: "La recepción no pertenece a esta sede." }));
+  }
+
+  if (String(entryToReverse.status ?? "") !== "received") {
+    redirect(buildReceiptsUrl({ siteId, historyError: "Solo se pueden reversar recepciones en estado Recibida." }));
+  }
+
+  const actionWindow = getReceiptActionWindowState(String(entryToReverse.created_at ?? ""));
+
+  if (!actionWindow.isOpen) {
+    redirect(
+      buildReceiptsUrl({
+        siteId,
+        historyError: `La ventana para reversar esta recepción ya cerró. Máximo ${RECEIPT_ACTION_WINDOW_MINUTES} minutos desde su creación.`,
+      })
+    );
   }
 
   const { error } = await supabase.rpc("origo_reverse_inventory_entry", {
@@ -215,6 +277,7 @@ export default async function ReceiptsPage({
   }
 
   const activeSiteName = String(siteRow?.name ?? "Sede activa").trim();
+  const nowMs = Date.now();
 
   return (
     <div className="w-full space-y-6">
@@ -302,57 +365,72 @@ export default async function ReceiptsPage({
               </tr>
             </thead>
             <tbody>
-              {entryRows.map((entryRow) => (
-                <tr key={entryRow.id} className="border-t border-zinc-200/60 align-top">
-                  <td className="py-3 pr-3 font-mono text-xs">
-                    {formatColombiaDateTime(entryRow.received_at ?? entryRow.created_at)}
-                  </td>
-                  <td className="py-3 pr-3 font-semibold">{entryRow.supplier_name ?? "-"}</td>
-                  <td className="py-3 pr-3">{entryRow.invoice_number ?? "-"}</td>
-                  <td className="py-3 pr-3">
-                    <span className={entryRow.entry_mode === "emergency"
-                      ? "rounded-full bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-800"
-                      : "rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-800"}
-                    >
-                      {formatEntryMode(entryRow.entry_mode)}
-                    </span>
-                    {entryRow.entry_mode === "emergency" && entryRow.emergency_reason ? (
-                      <div className="mt-1 max-w-[220px] text-xs text-[var(--ui-muted)]">
-                        {entryRow.emergency_reason}
-                      </div>
-                    ) : null}
-                  </td>
-                  <td className="py-3 pr-3">{formatEntryStatus(entryRow.status)}</td>
-                  <td className="py-3 pr-3">
-                    {entryRow.status === "received" ? (
-                      <div className="flex min-w-[300px] flex-col gap-2">
-                        <Link
-                          href={buildCorrectionReceiptUrl(siteId, entryRow.id)}
-                          className="ui-btn ui-btn--brand ui-btn--sm"
-                        >
-                          Corregir recepción
-                        </Link>
+              {entryRows.map((entryRow) => {
+                const actionWindow = getReceiptActionWindowState(entryRow.created_at, nowMs);
+                const canModify = entryRow.status === "received" && actionWindow.isOpen;
 
-                        <form action={reverseReceipt} className="flex flex-col gap-2 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-2">
-                          <input type="hidden" name="entry_id" value={entryRow.id} />
-                          <input type="hidden" name="site_id" value={siteId} />
-                          <input
-                            name="correction_comment"
-                            className="ui-input h-10 text-xs"
-                            placeholder="Comentario para reversar"
-                            required
-                          />
-                          <button type="submit" className="ui-btn ui-btn--ghost ui-btn--sm">
-                            Solo reversar
-                          </button>
-                        </form>
-                      </div>
-                    ) : (
-                      <span className="text-xs text-[var(--ui-muted)]">Sin acciones</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
+                return (
+                  <tr key={entryRow.id} className="border-t border-zinc-200/60 align-top">
+                    <td className="py-3 pr-3 font-mono text-xs">
+                      {formatColombiaDateTime(entryRow.received_at ?? entryRow.created_at)}
+                    </td>
+                    <td className="py-3 pr-3 font-semibold">{entryRow.supplier_name ?? "-"}</td>
+                    <td className="py-3 pr-3">{entryRow.invoice_number ?? "-"}</td>
+                    <td className="py-3 pr-3">
+                      <span className={entryRow.entry_mode === "emergency"
+                        ? "rounded-full bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-800"
+                        : "rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-800"}
+                      >
+                        {formatEntryMode(entryRow.entry_mode)}
+                      </span>
+                      {entryRow.entry_mode === "emergency" && entryRow.emergency_reason ? (
+                        <div className="mt-1 max-w-[220px] text-xs text-[var(--ui-muted)]">
+                          {entryRow.emergency_reason}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td className="py-3 pr-3">{formatEntryStatus(entryRow.status)}</td>
+                    <td className="py-3 pr-3">
+                      {canModify ? (
+                        <div className="flex min-w-[300px] flex-col gap-2">
+                          <Link
+                            href={buildCorrectionReceiptUrl(siteId, entryRow.id)}
+                            className="ui-btn ui-btn--brand ui-btn--sm"
+                          >
+                            Corregir recepción
+                          </Link>
+
+                          <form action={reverseReceipt} className="flex flex-col gap-2 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-2">
+                            <input type="hidden" name="entry_id" value={entryRow.id} />
+                            <input type="hidden" name="site_id" value={siteId} />
+                            <input
+                              name="correction_comment"
+                              className="ui-input h-10 text-xs"
+                              placeholder="Comentario para reversar"
+                              required
+                            />
+                            <button type="submit" className="ui-btn ui-btn--ghost ui-btn--sm">
+                              Solo reversar
+                            </button>
+                          </form>
+                          <div className="text-center text-[11px] font-semibold text-[var(--ui-muted)]">
+                            Ventana operativa: {actionWindow.label}
+                          </div>
+                        </div>
+                      ) : entryRow.status === "received" ? (
+                        <div className="max-w-[260px] rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-3 py-2 text-xs text-[var(--ui-muted)]">
+                          <div className="font-semibold text-[var(--ui-text)]">Corrección cerrada</div>
+                          <div className="mt-1">
+                            La ventana operativa es de {RECEIPT_ACTION_WINDOW_MINUTES} minutos desde la creación.
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-[var(--ui-muted)]">Sin acciones</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
               {!entryRows.length ? (
                 <tr>
                   <td className="py-6 text-[var(--ui-muted)]" colSpan={6}>
