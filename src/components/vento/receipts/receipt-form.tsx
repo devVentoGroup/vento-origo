@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, type KeyboardEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { formatPurchaseOrderRef } from "@/lib/purchase-orders/reference";
 
@@ -563,6 +563,7 @@ export function ReceiptForm({
   const storageKey = `origo:receipts:form:${siteId}:${receiptDraftScope}`;
   const legacyStorageKey = `origo:receipts:form:${siteId}`;
   const storedDraft = readStoredDraft(storageKey, defaultLocationId);
+  const previousSiteIdRef = useRef(siteId);
 
   const [supplierId, setSupplierId] = useState(
     selectedPurchaseOrderId ? prefillSupplierId : storedDraft?.supplierId ?? prefillSupplierId
@@ -718,13 +719,45 @@ export function ReceiptForm({
   }, [legacyStorageKey]);
 
   useEffect(() => {
-    if (submitSuccess) {
-      window.sessionStorage.removeItem(storageKey);
-      window.sessionStorage.removeItem(legacyStorageKey);
-    }
-  }, [legacyStorageKey, storageKey, submitSuccess]);
+    if (!submitSuccess) return;
+
+    window.sessionStorage.removeItem(storageKey);
+    window.sessionStorage.removeItem(legacyStorageKey);
+    setSupplierId(selectedPurchaseOrderId ? prefillSupplierId : "");
+    setInvoiceNumber("");
+    setNotes("");
+    setReceivedAt("");
+    setEmergencyReason("");
+    setIsExceptionReceipt(false);
+    setActiveProductPickerIndex(null);
+    setLines([makeEmptyLine(defaultLocationId)]);
+    setFieldErrors({});
+    setRequestDraft(null);
+    setMasterDataRequests([]);
+  }, [legacyStorageKey, prefillSupplierId, selectedPurchaseOrderId, storageKey, submitSuccess]);
 
   useEffect(() => {
+    if (previousSiteIdRef.current === siteId) return;
+
+    previousSiteIdRef.current = siteId;
+    window.sessionStorage.removeItem(storageKey);
+    window.sessionStorage.removeItem(legacyStorageKey);
+    setSupplierId("");
+    setInvoiceNumber("");
+    setNotes("");
+    setReceivedAt("");
+    setEmergencyReason("");
+    setIsExceptionReceipt(false);
+    setActiveProductPickerIndex(null);
+    setLines([makeEmptyLine(defaultLocationId)]);
+    setFieldErrors({});
+    setRequestDraft(null);
+    setMasterDataRequests([]);
+  }, [legacyStorageKey, siteId, storageKey]);
+
+  useEffect(() => {
+    if (submitSuccess) return;
+
     const payload = {
       supplierId,
       invoiceNumber,
@@ -745,6 +778,7 @@ export function ReceiptForm({
     notes,
     receivedAt,
     storageKey,
+    submitSuccess,
     supplierId,
   ]);
 
@@ -1860,7 +1894,10 @@ export function ReceiptForm({
               className="ui-btn ui-btn--ghost w-full"
               onClick={() => {
                 window.sessionStorage.removeItem(storageKey);
+                setSupplierId("");
                 setLines([makeEmptyLine(defaultLocationId)]);
+                setActiveProductPickerIndex(null);
+                setFieldErrors({});
                 setInvoiceNumber("");
                 setNotes("");
                 setReceivedAt("");

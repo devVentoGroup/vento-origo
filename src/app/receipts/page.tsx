@@ -32,6 +32,7 @@ type SearchParams = {
   error?: string;
   ok?: string;
   purchase_order_id?: string;
+  site_id?: string;
 };
 
 type ProductRow = {
@@ -399,6 +400,33 @@ function safeDecode(raw: string | undefined) {
     return decodeURIComponent(raw);
   } catch {
     return raw;
+  }
+}
+
+function buildReceiptsUrl(params: { siteId?: string; ok?: string; error?: string; purchaseOrderId?: string }) {
+  const search = new URLSearchParams();
+  if (params.siteId) search.set("site_id", params.siteId);
+  if (params.purchaseOrderId) search.set("purchase_order_id", params.purchaseOrderId);
+  if (params.ok) search.set("ok", params.ok);
+  if (params.error) search.set("error", params.error);
+  const qs = search.toString();
+  return qs ? `/receipts?${qs}` : "/receipts";
+}
+
+function formatEntryStatus(status: string | null) {
+  switch (status) {
+    case "received":
+      return "Recibida";
+    case "reversed":
+      return "Reversada";
+    case "corrected":
+      return "Corregida";
+    case "draft":
+      return "Borrador";
+    case "cancelled":
+      return "Cancelada";
+    default:
+      return status || "-";
   }
 }
 
@@ -1244,7 +1272,7 @@ async function createReceipt(formData: FormData) {
     }
   }
 
-  redirect("/receipts?ok=created");
+  redirect(buildReceiptsUrl({ siteId, ok: "created" }));
 }
 
 async function reverseReceipt(formData: FormData) {
@@ -1258,14 +1286,15 @@ async function reverseReceipt(formData: FormData) {
   }
 
   const entryId = asText(formData.get("entry_id"));
+  const siteId = asText(formData.get("site_id"));
   const correctionComment = asText(formData.get("correction_comment"));
 
   if (!entryId) {
-    redirect("/receipts?error=" + encodeURIComponent("Recepción requerida para reversar."));
+    redirect(buildReceiptsUrl({ siteId, error: "Recepción requerida para reversar." }));
   }
 
   if (!correctionComment) {
-    redirect("/receipts?error=" + encodeURIComponent("El comentario de reversión es obligatorio."));
+    redirect(buildReceiptsUrl({ siteId, error: "El comentario de reversión es obligatorio." }));
   }
 
   const { error } = await supabase.rpc("origo_reverse_inventory_entry", {
@@ -1276,12 +1305,14 @@ async function reverseReceipt(formData: FormData) {
   if (error) {
     const reversalError = error as ReversalRpcError;
     redirect(
-      "/receipts?error=" +
-        encodeURIComponent(reversalError.message ?? "No se pudo reversar la recepción.")
+      buildReceiptsUrl({
+        siteId,
+        error: reversalError.message ?? "No se pudo reversar la recepción.",
+      })
     );
   }
 
-  redirect("/receipts?ok=reversed");
+  redirect(buildReceiptsUrl({ siteId, ok: "reversed" }));
 }
 
 export default async function ReceiptsPage({
@@ -1307,10 +1338,19 @@ export default async function ReceiptsPage({
       .eq("employee_id", user.id)
       .maybeSingle(),
   ]);
-  const siteId = String(settings?.selected_site_id ?? employee?.site_id ?? "").trim();
+  const requestedSiteId = String(sp.site_id ?? "").trim();
+  const savedSiteId = String(settings?.selected_site_id ?? employee?.site_id ?? "").trim();
+  const siteId = requestedSiteId || savedSiteId;
   if (!siteId) {
     redirect("/no-access?reason=no_site&returnTo=/receipts");
   }
+
+  const { data: activeSiteData } = await supabase
+    .from("sites")
+    .select("name")
+    .eq("id", siteId)
+    .maybeSingle();
+  const activeSiteName = String(activeSiteData?.name ?? siteId).trim();
 
   const [
     { data: suppliersData },
@@ -1357,7 +1397,7 @@ export default async function ReceiptsPage({
       })
     );
 
-  const productIdsForCatalog = baseProducts.map((product) => product.id);
+  const productIdsForCatalog = baseProducts.map((product) => product.id).filter(Boolean);
 
   const [
     productSuppliersResult,
@@ -1702,6 +1742,9 @@ export default async function ReceiptsPage({
             <p className="ui-body-muted">
               Flujo principal de entradas desde ORIGO. Impacta inventario y costo promedio.
             </p>
+            <div className="mt-2 inline-flex rounded-full border border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-3 py-1 text-xs font-semibold text-[var(--ui-muted)]">
+              Sede de recepción: {activeSiteName}
+            </div>
           </div>
           <Link href="/purchase-orders" className="ui-btn ui-btn--ghost">
             Ver ordenes de compra
@@ -1712,32 +1755,15 @@ export default async function ReceiptsPage({
             {okMsg === "reversed" ? "Recepción reversada correctamente." : "Recepción registrada correctamente."}
           </div>
         ) : null}
+        {errorMsg ? (
+          <div className="ui-alert ui-alert--danger">
+            {errorMsg}
+          </div>
+        ) : null}
       </div>
 
-      <ReceiptForm
-        action={createReceipt}
-        siteId={siteId}
-        suppliers={suppliers}
-        products={products}
-        locations={locations}
-        locationPositions={locationPositions}
-        purchaseOrders={purchaseOrders.map((po) => ({
-          id: po.id,
-          created_at: po.created_at,
-          status: po.status,
-          suppliers: Array.isArray(po.suppliers) ? po.suppliers[0] ?? null : po.suppliers ?? null,
-        }))}
-        selectedPurchaseOrderId={selectedPurchaseOrderIdForForm}
-        prefillSupplierId={prefillSupplierId}
-        prefillInvoiceNumber={prefillInvoiceNumber}
-        prefillNotes={prefillNotes}
-        prefillRows={prefillRows}
-        serverErrorMessage={errorMsg}
-        submitSuccess={Boolean(okMsg)}
-      />
-
       <div className="ui-panel">
-        <div className="ui-h3">Recepciones recientes</div>
+        <div className="ui-h3">Historial de recepciones</div>
         <div className="mt-4 overflow-x-auto">
           <table className="ui-table min-w-full text-sm">
             <thead className="text-left text-[var(--ui-muted)]">
@@ -1772,11 +1798,12 @@ export default async function ReceiptsPage({
                       </div>
                     ) : null}
                   </td>
-                  <td className="py-2 pr-3">{entryRow.status ?? "-"}</td>
+                  <td className="py-2 pr-3">{formatEntryStatus(entryRow.status)}</td>
                   <td className="py-2 pr-3">
                     {entryRow.status === "received" ? (
                       <form action={reverseReceipt} className="flex min-w-[260px] flex-col gap-2">
                         <input type="hidden" name="entry_id" value={entryRow.id} />
+                        <input type="hidden" name="site_id" value={siteId} />
                         <input
                           name="correction_comment"
                           className="ui-input h-9 text-xs"
@@ -1804,6 +1831,29 @@ export default async function ReceiptsPage({
           </table>
         </div>
       </div>
+
+      <ReceiptForm
+        action={createReceipt}
+        siteId={siteId}
+        suppliers={suppliers}
+        products={products}
+        locations={locations}
+        locationPositions={locationPositions}
+        purchaseOrders={purchaseOrders.map((po) => ({
+          id: po.id,
+          created_at: po.created_at,
+          status: po.status,
+          suppliers: Array.isArray(po.suppliers) ? po.suppliers[0] ?? null : po.suppliers ?? null,
+        }))}
+        selectedPurchaseOrderId={selectedPurchaseOrderIdForForm}
+        prefillSupplierId={prefillSupplierId}
+        prefillInvoiceNumber={prefillInvoiceNumber}
+        prefillNotes={prefillNotes}
+        prefillRows={prefillRows}
+        serverErrorMessage={errorMsg}
+        submitSuccess={Boolean(okMsg)}
+      />
+
     </div>
   );
 }
