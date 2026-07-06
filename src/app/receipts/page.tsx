@@ -105,6 +105,13 @@ function buildNewReceiptUrl(siteId: string) {
   return query ? `/receipts/new?${query}` : "/receipts/new";
 }
 
+function buildCorrectionReceiptUrl(siteId: string, entryId: string) {
+  const search = new URLSearchParams();
+  if (siteId) search.set("site_id", siteId);
+  search.set("correction_entry_id", entryId);
+  return `/receipts/new?${search.toString()}`;
+}
+
 async function reverseReceipt(formData: FormData) {
   "use server";
 
@@ -239,12 +246,15 @@ export default async function ReceiptsPage({
         {okMsg === "reversed" ? (
           <div className="ui-alert ui-alert--success">Recepción reversada correctamente.</div>
         ) : null}
+        {okMsg === "corrected" ? (
+          <div className="ui-alert ui-alert--success">Recepción corregida correctamente.</div>
+        ) : null}
         {historyError ? (
           <div className="ui-alert ui-alert--danger">{historyError}</div>
         ) : null}
       </section>
 
-      <section className="grid gap-4 md:grid-cols-3">
+      <section className="grid gap-4 md:grid-cols-4">
         <div className="rounded-[1.5rem] border border-[var(--ui-border)] bg-white p-4 shadow-sm">
           <div className="text-xs font-semibold uppercase tracking-wide text-[var(--ui-muted)]">Total histórico</div>
           <div className="mt-1 text-3xl font-bold text-[var(--ui-text)]">{entryRows.length}</div>
@@ -261,6 +271,12 @@ export default async function ReceiptsPage({
             {entryRows.filter((row) => row.status === "reversed").length}
           </div>
         </div>
+        <div className="rounded-[1.5rem] border border-[var(--ui-border)] bg-white p-4 shadow-sm">
+          <div className="text-xs font-semibold uppercase tracking-wide text-[var(--ui-muted)]">Corregidas</div>
+          <div className="mt-1 text-3xl font-bold text-[var(--ui-text)]">
+            {entryRows.filter((row) => row.status === "corrected").length}
+          </div>
+        </div>
       </section>
 
       <section className="ui-panel">
@@ -268,7 +284,7 @@ export default async function ReceiptsPage({
           <div>
             <div className="ui-h3">Historial de recepciones</div>
             <p className="mt-1 text-sm text-[var(--ui-muted)]">
-              Las correcciones no se hacen desde el formulario de creación. Usa reversión auditada y luego crea una recepción nueva.
+              Usa corrección auditada cuando necesites editar una recepción. La reversión simple queda solo para anular entradas.
             </p>
           </div>
         </div>
@@ -309,19 +325,28 @@ export default async function ReceiptsPage({
                   <td className="py-3 pr-3">{formatEntryStatus(entryRow.status)}</td>
                   <td className="py-3 pr-3">
                     {entryRow.status === "received" ? (
-                      <form action={reverseReceipt} className="flex min-w-[280px] flex-col gap-2">
-                        <input type="hidden" name="entry_id" value={entryRow.id} />
-                        <input type="hidden" name="site_id" value={siteId} />
-                        <input
-                          name="correction_comment"
-                          className="ui-input h-10 text-xs"
-                          placeholder="Comentario obligatorio"
-                          required
-                        />
-                        <button type="submit" className="ui-btn ui-btn--ghost ui-btn--sm">
-                          Reversar recepción
-                        </button>
-                      </form>
+                      <div className="flex min-w-[300px] flex-col gap-2">
+                        <Link
+                          href={buildCorrectionReceiptUrl(siteId, entryRow.id)}
+                          className="ui-btn ui-btn--brand ui-btn--sm"
+                        >
+                          Corregir recepción
+                        </Link>
+
+                        <form action={reverseReceipt} className="flex flex-col gap-2 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-2">
+                          <input type="hidden" name="entry_id" value={entryRow.id} />
+                          <input type="hidden" name="site_id" value={siteId} />
+                          <input
+                            name="correction_comment"
+                            className="ui-input h-10 text-xs"
+                            placeholder="Comentario para reversar"
+                            required
+                          />
+                          <button type="submit" className="ui-btn ui-btn--ghost ui-btn--sm">
+                            Solo reversar
+                          </button>
+                        </form>
+                      </div>
                     ) : (
                       <span className="text-xs text-[var(--ui-muted)]">Sin acciones</span>
                     )}

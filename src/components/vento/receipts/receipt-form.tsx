@@ -69,6 +69,14 @@ type PrefillRow = {
   inputUnitLabel: string;
   conversionFactorToStock: number;
   stockUnitCode: string;
+  productSearch?: string;
+  locationId?: string;
+  positionId?: string;
+  costInputMode?: "net" | "gross";
+  taxRate?: number;
+  lotNumber?: string;
+  expiryDate?: string;
+  notes?: string;
 };
 
 type CostInputMode = "net" | "gross";
@@ -150,9 +158,11 @@ type Props = {
   prefillSupplierId: string;
   prefillInvoiceNumber: string;
   prefillNotes: string;
+  prefillReceivedAt?: string;
   prefillRows: PrefillRow[];
   serverErrorMessage?: string;
   submitSuccess?: boolean;
+  correctionEntryId?: string;
 };
 
 const DIRECT_RECEIPT_REASON = "Recepción directa sin orden de compra.";
@@ -199,16 +209,16 @@ function buildInitialRows(params: {
 
   return params.prefillRows.map((row) => ({
     productId: row.productId,
-    productSearch: "",
-    locationId: params.defaultLocationId,
-    positionId: "",
+    productSearch: row.productSearch ?? "",
+    locationId: row.locationId || params.defaultLocationId,
+    positionId: row.positionId ?? "",
     quantity: String(row.quantity),
     unitCost: row.unitCost > 0 ? String(row.unitCost) : "",
-    costInputMode: "net",
-    taxRate: "0",
-    lotNumber: "",
-    expiryDate: "",
-    notes: "",
+    costInputMode: row.costInputMode === "gross" ? "gross" : "net",
+    taxRate: row.taxRate !== undefined && row.taxRate !== null ? String(row.taxRate) : "0",
+    lotNumber: row.lotNumber ?? "",
+    expiryDate: row.expiryDate ?? "",
+    notes: row.notes ?? "",
     purchaseOrderItemId: row.purchaseOrderItemId,
     presentationId: row.presentationId,
     inputUnitCode: row.inputUnitCode,
@@ -551,39 +561,48 @@ export function ReceiptForm({
   prefillSupplierId,
   prefillInvoiceNumber,
   prefillNotes,
+  prefillReceivedAt = "",
   prefillRows,
   serverErrorMessage = "",
   submitSuccess = false,
+  correctionEntryId = "",
 }: Props) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const defaultLocationId = "";
-  const receiptDraftScope = selectedPurchaseOrderId ? `po:${selectedPurchaseOrderId}` : "direct";
+  const isCorrectionMode = Boolean(correctionEntryId);
+  const receiptDraftScope = isCorrectionMode
+    ? `correction:${correctionEntryId}`
+    : selectedPurchaseOrderId
+      ? `po:${selectedPurchaseOrderId}`
+      : "direct";
   const storageKey = `origo:receipts:form:${siteId}:${receiptDraftScope}`;
   const legacyStorageKey = `origo:receipts:form:${siteId}`;
   const storedDraft = readStoredDraft(storageKey, defaultLocationId);
   const previousSiteIdRef = useRef(siteId);
 
   const [supplierId, setSupplierId] = useState(
-    selectedPurchaseOrderId ? prefillSupplierId : storedDraft?.supplierId ?? prefillSupplierId
+    selectedPurchaseOrderId || isCorrectionMode ? prefillSupplierId : storedDraft?.supplierId ?? prefillSupplierId
   );
   const [invoiceNumber, setInvoiceNumber] = useState(
-    selectedPurchaseOrderId ? prefillInvoiceNumber : storedDraft?.invoiceNumber ?? prefillInvoiceNumber
+    selectedPurchaseOrderId || isCorrectionMode ? prefillInvoiceNumber : storedDraft?.invoiceNumber ?? prefillInvoiceNumber
   );
   const [notes, setNotes] = useState(
-    selectedPurchaseOrderId ? prefillNotes : storedDraft?.notes ?? prefillNotes
+    selectedPurchaseOrderId || isCorrectionMode ? prefillNotes : storedDraft?.notes ?? prefillNotes
   );
-  const [receivedAt, setReceivedAt] = useState(storedDraft?.receivedAt ?? "");
+  const [receivedAt, setReceivedAt] = useState(
+    selectedPurchaseOrderId || isCorrectionMode ? prefillReceivedAt : storedDraft?.receivedAt ?? prefillReceivedAt
+  );
   const [isExceptionReceipt, setIsExceptionReceipt] = useState(Boolean(storedDraft?.isExceptionReceipt));
   const [emergencyReason, setEmergencyReason] = useState(storedDraft?.emergencyReason ?? "");
   const [activeProductPickerIndex, setActiveProductPickerIndex] = useState<number | null>(null);
   const [lines, setLines] = useState<ReceiptLine[]>(() => {
     const initialRows = buildInitialRows({ prefillRows, defaultLocationId });
 
-    // When receiving against a PO, always trust the server prefill. A stale browser draft
-    // can otherwise hide the product lines loaded from purchase_order_items.
-    if (selectedPurchaseOrderId) return initialRows;
+    // When receiving against a PO or correcting an existing receipt, always trust the server prefill.
+    // A stale browser draft can otherwise hide the product lines loaded from the server.
+    if (selectedPurchaseOrderId || isCorrectionMode) return initialRows;
 
     return storedDraft?.lines?.length ? storedDraft.lines : initialRows;
   });
@@ -726,7 +745,7 @@ export function ReceiptForm({
     setSupplierId(selectedPurchaseOrderId ? prefillSupplierId : "");
     setInvoiceNumber("");
     setNotes("");
-    setReceivedAt("");
+    setReceivedAt(isCorrectionMode ? prefillReceivedAt : "");
     setEmergencyReason("");
     setIsExceptionReceipt(false);
     setActiveProductPickerIndex(null);
@@ -734,7 +753,7 @@ export function ReceiptForm({
     setFieldErrors({});
     setRequestDraft(null);
     setMasterDataRequests([]);
-  }, [legacyStorageKey, prefillSupplierId, selectedPurchaseOrderId, storageKey, submitSuccess]);
+  }, [isCorrectionMode, legacyStorageKey, prefillReceivedAt, prefillRows, prefillSupplierId, selectedPurchaseOrderId, storageKey, submitSuccess]);
 
   useEffect(() => {
     if (previousSiteIdRef.current === siteId) return;
@@ -1029,6 +1048,7 @@ export function ReceiptForm({
       <input type="hidden" name="site_id" value={siteId} />
       <input type="hidden" name="supplier_id" value={supplierId} />
       <input type="hidden" name="purchase_order_id" value={selectedPurchaseOrderId} />
+      <input type="hidden" name="correction_entry_id" value={correctionEntryId} />
       <input type="hidden" name="entry_mode" value={entryMode} />
       <input type="hidden" name="emergency_reason" value={effectiveEmergencyReason} />
       {masterDataRequests.map((request) => (
@@ -1044,14 +1064,20 @@ export function ReceiptForm({
         <section className="rounded-[1.75rem] border border-[var(--ui-border)] bg-white p-5 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <div className="ui-caption">Tipo de recepción</div>
+              <div className="ui-caption">{isCorrectionMode ? "Corrección auditada" : "Tipo de recepción"}</div>
               <h2 className="mt-1 text-xl font-bold text-[var(--ui-text)]">
-                {isPurchaseOrderReceipt ? "Recepción con orden de compra" : "Recepción directa"}
+                {isCorrectionMode
+                  ? "Corregir recepción"
+                  : isPurchaseOrderReceipt
+                    ? "Recepción con orden de compra"
+                    : "Recepción directa"}
               </h2>
               <p className="mt-1 max-w-3xl text-sm leading-6 text-[var(--ui-muted)]">
-                {isPurchaseOrderReceipt
-                  ? "Carga los insumos pendientes de la OC, confirma cantidades reales y agrega extras solo si llegaron por urgencia."
-                  : "Recibe compras sin OC sin tratarlas como error operativo. Selecciona proveedor, insumos, presentación, costo e inventario destino."}
+                {isCorrectionMode
+                  ? "Ajusta los datos de la recepción original. Al guardar se reversa la recepción anterior y se crea una nueva recepción corregida con trazabilidad."
+                  : isPurchaseOrderReceipt
+                    ? "Carga los insumos pendientes de la OC, confirma cantidades reales y agrega extras solo si llegaron por urgencia."
+                    : "Recibe compras sin OC sin tratarlas como error operativo. Selecciona proveedor, insumos, presentación, costo e inventario destino."}
               </p>
             </div>
 
@@ -1190,6 +1216,21 @@ export function ReceiptForm({
               </p>
             </div>
           )}
+
+          {isCorrectionMode ? (
+            <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+              <div className="font-semibold">Comentario obligatorio de corrección</div>
+              <p className="mt-1 text-xs leading-5">
+                Describe qué dato estaba mal y por qué se está corrigiendo. Este comentario queda en auditoría.
+              </p>
+              <textarea
+                name="correction_comment"
+                className="ui-input mt-3 min-h-24 bg-white"
+                placeholder="Ej: Se digitó una cantidad incorrecta en la recepción original."
+                required
+              />
+            </div>
+          ) : null}
         </section>
 
         <section className="rounded-[1.75rem] border border-[var(--ui-border)] bg-white p-5 shadow-sm">
@@ -1886,7 +1927,7 @@ export function ReceiptForm({
             ) : null}
 
             <button type="submit" className="ui-btn ui-btn--brand w-full">
-              Registrar recepción
+              {isCorrectionMode ? "Guardar corrección" : "Registrar recepción"}
             </button>
 
             <button
@@ -1894,8 +1935,8 @@ export function ReceiptForm({
               className="ui-btn ui-btn--ghost w-full"
               onClick={() => {
                 window.sessionStorage.removeItem(storageKey);
-                setSupplierId("");
-                setLines([makeEmptyLine(defaultLocationId)]);
+                setSupplierId(isCorrectionMode ? prefillSupplierId : "");
+                setLines(isCorrectionMode ? buildInitialRows({ prefillRows, defaultLocationId }) : [makeEmptyLine(defaultLocationId)]);
                 setActiveProductPickerIndex(null);
                 setFieldErrors({});
                 setInvoiceNumber("");

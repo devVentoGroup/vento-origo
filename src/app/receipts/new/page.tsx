@@ -33,6 +33,7 @@ type SearchParams = {
   ok?: string;
   purchase_order_id?: string;
   site_id?: string;
+  correction_entry_id?: string;
 };
 
 type ProductRow = {
@@ -163,6 +164,8 @@ type PurchaseOrderItemRow = {
 
 type EntryRow = {
   id: string;
+  site_id?: string | null;
+  supplier_id?: string | null;
   supplier_name: string | null;
   invoice_number: string | null;
   status: string | null;
@@ -171,10 +174,32 @@ type EntryRow = {
   purchase_order_id: string | null;
   received_at: string | null;
   created_at: string | null;
+  notes?: string | null;
 };
 
 type ReversalRpcError = {
   message?: string;
+};
+
+type CorrectionEntryItemRow = {
+  product_id: string | null;
+  location_id: string | null;
+  location_position_id: string | null;
+  input_qty: number | null;
+  quantity_received: number | null;
+  input_unit_code: string | null;
+  unit: string | null;
+  input_uom_profile_id: string | null;
+  conversion_factor_to_stock: number | null;
+  stock_unit_code: string | null;
+  input_unit_cost: number | null;
+  net_unit_cost: number | null;
+  cost_input_mode: string | null;
+  tax_rate: number | null;
+  purchase_order_item_id: string | null;
+  lot_number: string | null;
+  expiry_date: string | null;
+  notes: string | null;
 };
 
 type MasterDataRequestKind = "new_product" | "new_presentation";
@@ -408,9 +433,24 @@ function buildReceiptsUrl(params: { siteId?: string; ok?: string; error?: string
   if (params.siteId) search.set("site_id", params.siteId);
   if (params.purchaseOrderId) search.set("purchase_order_id", params.purchaseOrderId);
   if (params.ok) search.set("ok", params.ok);
-  if (params.error) search.set("error", params.error);
+  if (params.error) search.set("history_error", params.error);
   const qs = search.toString();
   return qs ? `/receipts?${qs}` : "/receipts";
+}
+
+function buildNewReceiptUrl(params: {
+  siteId?: string;
+  purchaseOrderId?: string;
+  correctionEntryId?: string;
+  error?: string;
+}) {
+  const search = new URLSearchParams();
+  if (params.siteId) search.set("site_id", params.siteId);
+  if (params.purchaseOrderId) search.set("purchase_order_id", params.purchaseOrderId);
+  if (params.correctionEntryId) search.set("correction_entry_id", params.correctionEntryId);
+  if (params.error) search.set("error", params.error);
+  const qs = search.toString();
+  return qs ? `/receipts/new?${qs}` : "/receipts/new";
 }
 
 function formatEntryStatus(status: string | null) {
@@ -538,7 +578,7 @@ async function createReceipt(formData: FormData) {
 
   const siteId = asText(formData.get("site_id"));
   if (!siteId) {
-    redirect("/receipts/new?error=" + encodeURIComponent("No tienes sede activa."));
+    redirect(buildNewReceiptUrl({ error: "No tienes sede activa." }));
   }
 
   const { data: canReceive, error: permErr } = await supabase.rpc("has_permission", {
@@ -547,7 +587,7 @@ async function createReceipt(formData: FormData) {
     p_area_id: null,
   });
   if (permErr || !canReceive) {
-    redirect("/receipts/new?error=" + encodeURIComponent("No tienes permiso para registrar recepciones."));
+    redirect(buildNewReceiptUrl({ siteId, error: "No tienes permiso para registrar recepciones." }));
   }
 
   const supplierId = asText(formData.get("supplier_id"));
@@ -556,18 +596,25 @@ async function createReceipt(formData: FormData) {
   const notes = asText(formData.get("notes"));
   const purchaseOrderId = asText(formData.get("purchase_order_id")) || null;
   const emergencyReason = asText(formData.get("emergency_reason"));
+  const correctionEntryId = asText(formData.get("correction_entry_id")) || null;
+  const correctionComment = asText(formData.get("correction_comment"));
+
+  const createErrorUrl = (message: string) =>
+    buildNewReceiptUrl({
+      siteId,
+      purchaseOrderId: purchaseOrderId ?? undefined,
+      correctionEntryId: correctionEntryId ?? undefined,
+      error: message,
+    });
 
   const entryMode: "normal" | "emergency" = purchaseOrderId ? "normal" : "emergency";
 
   if (!supplierId) {
-    redirect("/receipts/new?error=" + encodeURIComponent("Proveedor requerido."));
+    redirect(createErrorUrl("Proveedor requerido."));
   }
 
   if (entryMode === "emergency" && !emergencyReason) {
-    redirect(
-      "/receipts/new?error=" +
-      encodeURIComponent("Motivo requerido para registrar una recepcion de emergencia.")
-    );
+    redirect(createErrorUrl("Motivo requerido para registrar una recepcion de emergencia."));
   }
 
   const { data: supplierRow } = await supabase
@@ -577,13 +624,13 @@ async function createReceipt(formData: FormData) {
     .maybeSingle();
   const supplierName = String(supplierRow?.name ?? "").trim();
   if (!supplierName) {
-    redirect("/receipts/new?error=" + encodeURIComponent("Proveedor no valido."));
+    redirect(createErrorUrl("Proveedor no valido."));
   }
 
   const { requests: masterDataRequests, errorMessage: masterDataRequestError } =
     normalizeMasterDataRequestPayloads(formData);
   if (masterDataRequestError) {
-    redirect("/receipts/new?error=" + encodeURIComponent(masterDataRequestError));
+    redirect(createErrorUrl(masterDataRequestError));
   }
 
   if (masterDataRequests.length > 0) {
@@ -593,12 +640,7 @@ async function createReceipt(formData: FormData) {
       .limit(1);
 
     if (masterDataTableErr) {
-      redirect(
-        "/receipts/new?error=" +
-        encodeURIComponent(
-          "No se pudieron preparar las solicitudes de maestro de datos. Aplica la migración product_master_review_requests antes de usar esta acción."
-        )
-      );
+redirect(createErrorUrl("No se pudieron preparar las solicitudes de maestro de datos. Aplica la migración product_master_review_requests antes de usar esta acción."));
     }
   }
 
@@ -610,7 +652,7 @@ async function createReceipt(formData: FormData) {
       .maybeSingle();
 
     if (purchaseOrderErr) {
-      redirect("/receipts/new?error=" + encodeURIComponent(purchaseOrderErr.message));
+      redirect(createErrorUrl(purchaseOrderErr.message));
     }
 
     const purchaseOrderSiteId = String(purchaseOrderRow?.site_id ?? "").trim();
@@ -618,21 +660,19 @@ async function createReceipt(formData: FormData) {
     const purchaseOrderStatus = String(purchaseOrderRow?.status ?? "").trim();
 
     if (!purchaseOrderRow || purchaseOrderSiteId !== siteId) {
-      redirect("/receipts/new?error=" + encodeURIComponent("Orden de compra no valida para esta sede."));
+      redirect(createErrorUrl("Orden de compra no valida para esta sede."));
     }
 
-    if (!["draft", "sent"].includes(purchaseOrderStatus)) {
-      redirect(
-        "/receipts/new?error=" +
-        encodeURIComponent("La orden de compra seleccionada ya no esta activa para recepcion.")
-      );
+    const allowedPurchaseOrderStatuses = correctionEntryId
+      ? ["draft", "sent", "received"]
+      : ["draft", "sent"];
+
+    if (!allowedPurchaseOrderStatuses.includes(purchaseOrderStatus)) {
+      redirect(createErrorUrl("La orden de compra seleccionada ya no esta activa para recepción."));
     }
 
     if (purchaseOrderSupplierId && purchaseOrderSupplierId !== supplierId) {
-      redirect(
-        "/receipts/new?error=" +
-        encodeURIComponent("El proveedor no coincide con la orden de compra seleccionada.")
-      );
+      redirect(createErrorUrl("El proveedor no coincide con la orden de compra seleccionada."));
     }
   }
 
@@ -708,7 +748,7 @@ async function createReceipt(formData: FormData) {
       .in("id", selectedPoItemIds);
 
     if (poItemsForReceiptErr) {
-      redirect("/receipts/new?error=" + encodeURIComponent(poItemsForReceiptErr.message));
+      redirect(createErrorUrl(poItemsForReceiptErr.message));
     }
 
     poItemMap = new Map(
@@ -728,7 +768,7 @@ async function createReceipt(formData: FormData) {
       : { data: [] as ProductUomProfileRow[], error: null };
 
   if (selectedPresentationRowsErr) {
-    redirect("/receipts/new?error=" + encodeURIComponent(selectedPresentationRowsErr.message));
+    redirect(createErrorUrl(selectedPresentationRowsErr.message));
   }
 
   const selectedPresentationById = new Map(
@@ -748,11 +788,11 @@ async function createReceipt(formData: FormData) {
 
       if (purchaseOrderId && poItemId) {
         if (!poItem) {
-          redirect("/receipts/new?error=" + encodeURIComponent("Hay una linea que no pertenece a la orden de compra seleccionada."));
+          redirect(createErrorUrl("Hay una linea que no pertenece a la orden de compra seleccionada."));
         }
 
         if (poItem.product_id !== productId) {
-          redirect("/receipts/new?error=" + encodeURIComponent("Hay una linea cuyo producto no coincide con la orden de compra."));
+          redirect(createErrorUrl("Hay una linea cuyo producto no coincide con la orden de compra."));
         }
       }
 
@@ -763,10 +803,7 @@ async function createReceipt(formData: FormData) {
 
       if (!poItemId) {
         if (!selectedPresentation || selectedPresentation.product_id !== productId) {
-          redirect(
-            "/receipts/new?error=" +
-            encodeURIComponent("Selecciona una presentación manual activa para cada item recibido.")
-          );
+          redirect(createErrorUrl("Selecciona una presentación manual activa para cada item recibido."));
         }
       }
 
@@ -845,12 +882,10 @@ async function createReceipt(formData: FormData) {
       const expiryDate = expiryDates[index] || null;
 
       if (profile?.lot_tracking && !lotNumber) {
-        redirect("/receipts/new?error=" + encodeURIComponent("Hay items que requieren lote."));
+        redirect(createErrorUrl("Hay items que requieren lote."));
       }
       if (profile?.expiry_tracking && !expiryDate) {
-        redirect(
-          "/receipts/new?error=" + encodeURIComponent("Hay items que requieren fecha de vencimiento.")
-        );
+        redirect(createErrorUrl("Hay items que requieren fecha de vencimiento."));
       }
 
       return {
@@ -888,11 +923,11 @@ async function createReceipt(formData: FormData) {
     .filter((row): row is NonNullable<typeof row> => Boolean(row));
 
   if (!items.length) {
-    redirect("/receipts/new?error=" + encodeURIComponent("Agrega al menos un item con cantidad mayor a 0."));
+    redirect(createErrorUrl("Agrega al menos un item con cantidad mayor a 0."));
   }
 
   if (items.some((item) => !item.location_id)) {
-    redirect("/receipts/new?error=" + encodeURIComponent("Selecciona una LOC para cada item."));
+    redirect(createErrorUrl("Selecciona una LOC para cada item."));
   }
 
   const selectedLocationIds = Array.from(new Set(items.map((item) => item.location_id).filter(Boolean)));
@@ -907,7 +942,7 @@ async function createReceipt(formData: FormData) {
       : { data: [] as Array<{ id: string }>, error: null };
 
   if (selectedLocationRowsErr) {
-    redirect("/receipts/new?error=" + encodeURIComponent(selectedLocationRowsErr.message));
+    redirect(createErrorUrl(selectedLocationRowsErr.message));
   }
 
   const validLocationIds = new Set(
@@ -915,7 +950,7 @@ async function createReceipt(formData: FormData) {
   );
 
   if (items.some((item) => !validLocationIds.has(item.location_id))) {
-    redirect("/receipts/new?error=" + encodeURIComponent("Hay un LOC no valido para esta sede."));
+    redirect(createErrorUrl("Hay un LOC no valido para esta sede."));
   }
 
   const selectedLocationPositionIds = Array.from(
@@ -934,7 +969,7 @@ async function createReceipt(formData: FormData) {
       .eq("is_active", true);
 
     if (positionRowsErr) {
-      redirect("/receipts/new?error=" + encodeURIComponent(positionRowsErr.message));
+      redirect(createErrorUrl(positionRowsErr.message));
     }
 
     const positionLocationMap = new Map(
@@ -950,10 +985,41 @@ async function createReceipt(formData: FormData) {
     });
 
     if (hasInvalidLocationPosition) {
-      redirect(
-        "/receipts/new?error=" +
-        encodeURIComponent("Hay una ubicación interna que no pertenece al LOC seleccionado.")
-      );
+      redirect(createErrorUrl("Hay una ubicación interna que no pertenece al LOC seleccionado."));
+    }
+  }
+
+  if (correctionEntryId) {
+    if (!correctionComment) {
+      redirect(createErrorUrl("El comentario de corrección es obligatorio."));
+    }
+
+    const { data: originalEntry, error: originalEntryErr } = await supabase
+      .from("inventory_entries")
+      .select("id,site_id,status,source_app")
+      .eq("id", correctionEntryId)
+      .maybeSingle();
+
+    if (originalEntryErr) {
+      redirect(createErrorUrl(originalEntryErr.message));
+    }
+
+    if (!originalEntry || String(originalEntry.site_id ?? "") !== siteId) {
+      redirect(createErrorUrl("La recepción original no pertenece a esta sede."));
+    }
+
+    if (String(originalEntry.status ?? "") !== "received") {
+      redirect(createErrorUrl("Solo se pueden corregir recepciones en estado Recibida."));
+    }
+
+    const { error: reverseForCorrectionErr } = await supabase.rpc("origo_reverse_inventory_entry", {
+      p_entry_id: correctionEntryId,
+      p_comment: correctionComment,
+    });
+
+    if (reverseForCorrectionErr) {
+      const reversalError = reverseForCorrectionErr as ReversalRpcError;
+      redirect(createErrorUrl(reversalError.message ?? "No se pudo reversar la recepción original para corregirla."));
     }
   }
 
@@ -1000,7 +1066,7 @@ async function createReceipt(formData: FormData) {
 
   const { data: entry, error: entryErr } = entryInsert;
   if (entryErr || !entry) {
-    redirect("/receipts/new?error=" + encodeURIComponent(entryErr?.message ?? "No se pudo crear la recepcion."));
+    redirect(createErrorUrl(entryErr?.message ?? "No se pudo crear la recepcion."));
   }
 
   const entryItemRows = items.map((item) => ({
@@ -1036,7 +1102,7 @@ async function createReceipt(formData: FormData) {
   }));
   const { error: entryItemsErr } = await supabase.from("inventory_entry_items").insert(entryItemRows);
   if (entryItemsErr) {
-    redirect("/receipts/new?error=" + encodeURIComponent(entryItemsErr.message));
+    redirect(createErrorUrl(entryItemsErr.message));
   }
 
   const movementRows = items.map((item) => ({
@@ -1055,7 +1121,7 @@ async function createReceipt(formData: FormData) {
   }));
   const { error: movementErr } = await supabase.from("inventory_movements").insert(movementRows);
   if (movementErr) {
-    redirect("/receipts/new?error=" + encodeURIComponent(movementErr.message));
+    redirect(createErrorUrl(movementErr.message));
   }
 
   const productIdsWithReceipt = Array.from(new Set(items.map((row) => row.product_id)));
@@ -1097,7 +1163,7 @@ async function createReceipt(formData: FormData) {
         { onConflict: "site_id,product_id" }
       );
     if (stockErr) {
-      redirect("/receipts/new?error=" + encodeURIComponent(stockErr.message));
+      redirect(createErrorUrl(stockErr.message));
     }
   }
 
@@ -1108,7 +1174,7 @@ async function createReceipt(formData: FormData) {
       p_delta: item.quantity_received,
     });
     if (locErr) {
-      redirect("/receipts/new?error=" + encodeURIComponent(locErr.message));
+      redirect(createErrorUrl(locErr.message));
     }
   }
 
@@ -1154,7 +1220,7 @@ async function createReceipt(formData: FormData) {
       .update({ cost: costAfter, updated_at: new Date().toISOString() })
       .eq("id", productId);
     if (updateCostErr) {
-      redirect("/receipts/new?error=" + encodeURIComponent(updateCostErr.message));
+      redirect(createErrorUrl(updateCostErr.message));
     }
 
     const { error: costEventErr } = await supabase.from("product_cost_events").insert({
@@ -1171,7 +1237,7 @@ async function createReceipt(formData: FormData) {
       created_by: user.id,
     });
     if (costEventErr) {
-      redirect("/receipts/new?error=" + encodeURIComponent(costEventErr.message));
+      redirect(createErrorUrl(costEventErr.message));
     }
   }
 
@@ -1190,7 +1256,7 @@ async function createReceipt(formData: FormData) {
         .eq("id", poItemId)
         .maybeSingle();
       if (poItemErr) {
-        redirect("/receipts/new?error=" + encodeURIComponent(poItemErr.message));
+        redirect(createErrorUrl(poItemErr.message));
       }
 
       const currentReceived = Number(poItem?.quantity_received ?? 0);
@@ -1200,7 +1266,7 @@ async function createReceipt(formData: FormData) {
         .update({ quantity_received: nextReceived })
         .eq("id", poItemId);
       if (poItemUpdateErr) {
-        redirect("/receipts/new?error=" + encodeURIComponent(poItemUpdateErr.message));
+        redirect(createErrorUrl(poItemUpdateErr.message));
       }
     }
 
@@ -1209,7 +1275,7 @@ async function createReceipt(formData: FormData) {
       .select("quantity_ordered,quantity_received")
       .eq("purchase_order_id", purchaseOrderId);
     if (poItemsErr) {
-      redirect("/receipts/new?error=" + encodeURIComponent(poItemsErr.message));
+      redirect(createErrorUrl(poItemsErr.message));
     }
 
     const allReceived = (poAllItems ?? []).every((row) => {
@@ -1223,7 +1289,7 @@ async function createReceipt(formData: FormData) {
         .update({ status: "received", received_at: new Date().toISOString() })
         .eq("id", purchaseOrderId);
       if (poStatusErr) {
-        redirect("/receipts/new?error=" + encodeURIComponent(poStatusErr.message));
+        redirect(createErrorUrl(poStatusErr.message));
       }
     }
   }
@@ -1262,17 +1328,22 @@ async function createReceipt(formData: FormData) {
       .insert(requestRows);
 
     if (requestInsertErr) {
-      redirect(
-        "/receipts/new?error=" +
-        encodeURIComponent(
-          "La recepcion se registro, pero no se pudieron guardar las solicitudes de maestro de datos: " +
-          requestInsertErr.message
-        )
-      );
+redirect(createErrorUrl("La recepcion se registro, pero no se pudieron guardar las solicitudes de maestro de datos: " + requestInsertErr.message));
     }
   }
 
-  redirect(buildReceiptsUrl({ siteId, ok: "created" }));
+  if (correctionEntryId) {
+    const { error: markCorrectedErr } = await supabase.rpc("origo_mark_inventory_entry_corrected", {
+      p_original_entry_id: correctionEntryId,
+      p_replacement_entry_id: entry.id,
+    });
+
+    if (markCorrectedErr) {
+      redirect(buildReceiptsUrl({ siteId, error: "La recepción corregida se creó, pero no se pudo cerrar la auditoría de corrección: " + markCorrectedErr.message }));
+    }
+  }
+
+  redirect(buildReceiptsUrl({ siteId, ok: correctionEntryId ? "corrected" : "created" }));
 }
 
 async function reverseReceipt(formData: FormData) {
@@ -1323,6 +1394,7 @@ export default async function ReceiptsPage({
   const sp = (await searchParams) ?? {};
   const errorMsg = safeDecode(sp.error);
   const okMsg = safeDecode(sp.ok);
+  const correctionEntryId = String(sp.correction_entry_id ?? "").trim();
 
   const { supabase, user } = await requireAppAccess({
     appId: APP_ID,
@@ -1374,7 +1446,7 @@ export default async function ReceiptsPage({
   ]);
 
   if (receiptCatalogResult.errorMessage) {
-    redirect("/receipts/new?error=" + encodeURIComponent(receiptCatalogResult.errorMessage));
+    redirect(buildNewReceiptUrl({ siteId, correctionEntryId, error: receiptCatalogResult.errorMessage }));
   }
 
   const productsData = receiptCatalogResult.data;
@@ -1414,7 +1486,7 @@ export default async function ReceiptsPage({
     productUomProfilesResult.errorMessage ??
     procurementCostResult.errorMessage;
   if (catalogRelationError) {
-    redirect("/receipts/new?error=" + encodeURIComponent(catalogRelationError));
+    redirect(buildNewReceiptUrl({ siteId, correctionEntryId, error: catalogRelationError }));
   }
 
   const productSuppliersData = productSuppliersResult.data;
@@ -1527,11 +1599,12 @@ export default async function ReceiptsPage({
     });
   });
 
-  const purchaseOrderId = String(sp.purchase_order_id ?? "").trim();
+  let purchaseOrderId = String(sp.purchase_order_id ?? "").trim();
   let selectedPurchaseOrderIdForForm = "";
   let prefillSupplierId = "";
   let prefillInvoiceNumber = "";
   let prefillNotes = "";
+  let prefillReceivedAt = "";
   let prefillRows: Array<{
     productId: string;
     quantity: number;
@@ -1542,9 +1615,100 @@ export default async function ReceiptsPage({
     inputUnitLabel: string;
     conversionFactorToStock: number;
     stockUnitCode: string;
+    productSearch?: string;
+    locationId?: string;
+    positionId?: string;
+    costInputMode?: "net" | "gross";
+    taxRate?: number;
+    lotNumber?: string;
+    expiryDate?: string;
+    notes?: string;
   }> = [];
 
-  if (purchaseOrderId) {
+  if (correctionEntryId) {
+    const { data: correctionEntryData, error: correctionEntryErr } = await supabase
+      .from("inventory_entries")
+      .select("id,site_id,supplier_id,supplier_name,invoice_number,notes,status,entry_mode,emergency_reason,purchase_order_id,received_at,created_at")
+      .eq("id", correctionEntryId)
+      .maybeSingle();
+
+    const correctionEntry = correctionEntryData as EntryRow | null;
+
+    if (correctionEntryErr) {
+      redirect(buildReceiptsUrl({ siteId, error: correctionEntryErr.message }));
+    }
+
+    if (!correctionEntry || String(correctionEntry.site_id ?? "") !== siteId) {
+      redirect(buildReceiptsUrl({ siteId, error: "La recepción original no pertenece a esta sede." }));
+    }
+
+    if (String(correctionEntry.status ?? "") !== "received") {
+      redirect(buildReceiptsUrl({ siteId, error: "Solo se pueden corregir recepciones en estado Recibida." }));
+    }
+
+    const { data: correctionItemsData, error: correctionItemsErr } = await supabase
+      .from("inventory_entry_items")
+      .select("product_id,location_id,location_position_id,input_qty,quantity_received,input_unit_code,unit,input_uom_profile_id,conversion_factor_to_stock,stock_unit_code,input_unit_cost,net_unit_cost,cost_input_mode,tax_rate,purchase_order_item_id,lot_number,expiry_date,notes")
+      .eq("entry_id", correctionEntryId)
+      .order("created_at", { ascending: true });
+
+    if (correctionItemsErr) {
+      redirect(buildReceiptsUrl({ siteId, error: correctionItemsErr.message }));
+    }
+
+    const productLabelById = new Map(
+      products.map((product) => {
+        const unit = String(product.stock_unit_code ?? product.unit ?? "").trim();
+        return [
+          product.id,
+          unit ? `${product.name ?? product.id} · ${unit}` : String(product.name ?? product.id),
+        ];
+      })
+    );
+
+    purchaseOrderId = String(correctionEntry.purchase_order_id ?? "").trim();
+    selectedPurchaseOrderIdForForm = purchaseOrderId;
+    prefillSupplierId = String(correctionEntry.supplier_id ?? "");
+    prefillInvoiceNumber = String(correctionEntry.invoice_number ?? "");
+    prefillNotes = String(correctionEntry.notes ?? "");
+    prefillReceivedAt = String(correctionEntry.received_at ?? correctionEntry.created_at ?? "").slice(0, 10);
+
+    prefillRows = ((correctionItemsData ?? []) as CorrectionEntryItemRow[])
+      .map((row) => {
+        if (!row.product_id) return null;
+
+        const factor = Number(row.conversion_factor_to_stock ?? 0) > 0
+          ? Number(row.conversion_factor_to_stock)
+          : 1;
+        const quantity =
+          Number(row.input_qty ?? 0) > 0
+            ? Number(row.input_qty)
+            : factor > 0
+              ? roundQuantity(Number(row.quantity_received ?? 0) / factor, 6)
+              : Number(row.quantity_received ?? 0);
+
+        return {
+          productId: row.product_id,
+          quantity,
+          unitCost: Number(row.net_unit_cost ?? row.input_unit_cost ?? 0),
+          purchaseOrderItemId: String(row.purchase_order_item_id ?? ""),
+          presentationId: String(row.input_uom_profile_id ?? ""),
+          inputUnitCode: String(row.input_unit_code ?? row.stock_unit_code ?? "").trim().toLowerCase(),
+          inputUnitLabel: String(row.unit ?? row.input_unit_code ?? row.stock_unit_code ?? "").trim(),
+          conversionFactorToStock: factor,
+          stockUnitCode: String(row.stock_unit_code ?? row.input_unit_code ?? "").trim().toLowerCase(),
+          productSearch: productLabelById.get(row.product_id) ?? "",
+          locationId: String(row.location_id ?? ""),
+          positionId: String(row.location_position_id ?? ""),
+          costInputMode: (row.cost_input_mode === "gross" ? "gross" : "net") as "net" | "gross",
+          taxRate: Number(row.tax_rate ?? 0),
+          lotNumber: String(row.lot_number ?? ""),
+          expiryDate: String(row.expiry_date ?? "").slice(0, 10),
+          notes: String(row.notes ?? ""),
+        };
+      })
+      .filter((row): row is NonNullable<typeof row> => Boolean(row));
+  } else if (purchaseOrderId) {
     const { data: poRow } = await supabase
       .from("purchase_orders")
       .select("id,supplier_id,site_id,status,created_at,notes")
@@ -1716,31 +1880,14 @@ export default async function ReceiptsPage({
     .limit(200);
   const purchaseOrders = (purchaseOrdersData ?? []) as PurchaseOrderRow[];
 
-  let entriesQuery = await supabase
-    .from("inventory_entries")
-    .select("id,supplier_name,invoice_number,status,entry_mode,emergency_reason,purchase_order_id,received_at,created_at")
-    .eq("site_id", siteId)
-    .eq("source_app", "origo")
-    .order("created_at", { ascending: false })
-    .limit(20);
-  if (entriesQuery.error && entriesQuery.error.code === "42703") {
-    entriesQuery = await supabase
-      .from("inventory_entries")
-      .select("id,supplier_name,invoice_number,status,entry_mode,emergency_reason,purchase_order_id,received_at,created_at")
-      .eq("site_id", siteId)
-      .order("created_at", { ascending: false })
-      .limit(20);
-  }
-  const entryRows = (entriesQuery.data ?? []) as EntryRow[];
-
   return (
     <div className="w-full space-y-6">
       <div className="ui-panel space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h1 className="ui-h1">Nueva recepción</h1>
+            <h1 className="ui-h1">{correctionEntryId ? "Corregir recepción" : "Nueva recepción"}</h1>
             <p className="ui-body-muted">
-              Registra una entrada de inventario con proveedor, presentación, costo y LOC de destino.
+              {correctionEntryId ? "Ajusta la recepción original. El sistema reversa la entrada anterior y crea una nueva recepción corregida." : "Registra una entrada de inventario con proveedor, presentación, costo y LOC de destino."}
             </p>
             <div className="mt-2 inline-flex rounded-full border border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-3 py-1 text-xs font-semibold text-[var(--ui-muted)]">
               Sede de recepción: {activeSiteName}
@@ -1757,7 +1904,7 @@ export default async function ReceiptsPage({
         </div>
         {okMsg ? (
           <div className="ui-alert ui-alert--success">
-            "Recepción registrada correctamente."
+            {okMsg === "corrected" ? "Recepción corregida correctamente." : "Recepción registrada correctamente."}
           </div>
         ) : null}
         {errorMsg ? (
@@ -1784,9 +1931,11 @@ export default async function ReceiptsPage({
         prefillSupplierId={prefillSupplierId}
         prefillInvoiceNumber={prefillInvoiceNumber}
         prefillNotes={prefillNotes}
+        prefillReceivedAt={prefillReceivedAt}
         prefillRows={prefillRows}
         serverErrorMessage={errorMsg}
         submitSuccess={Boolean(okMsg)}
+        correctionEntryId={correctionEntryId}
       />
 
     </div>
