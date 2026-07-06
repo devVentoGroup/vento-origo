@@ -156,6 +156,8 @@ type Props = {
 };
 
 const DIRECT_RECEIPT_REASON = "Recepción directa sin orden de compra.";
+const PRODUCT_PICKER_EMPTY_QUERY_LIMIT = 50;
+const PRODUCT_PICKER_SEARCH_LIMIT = 50;
 
 const RECEIPT_LOCATION_LABELS_BY_CODE: Record<string, string> = {
   "LOC-CP-BOD-MAIN": "Bodega principal",
@@ -299,6 +301,14 @@ function formatProductOptionLabel(product: ProductRow) {
   const unit = String(product.stock_unit_code ?? product.unit ?? "").trim();
 
   return unit ? `${name} · ${unit}` : name;
+}
+
+function productHasSupplier(product: ProductRow, supplierId: string): boolean {
+  return Boolean(
+    supplierId &&
+    Array.isArray(product.supplier_ids) &&
+    product.supplier_ids.includes(supplierId)
+  );
 }
 
 function normalizeProductSearch(value: string) {
@@ -612,11 +622,6 @@ export function ReceiptForm({
     [products]
   );
 
-  const supplierScopedProducts = useMemo(() => {
-    if (!supplierId || !productsHaveSupplierLinks) return products;
-    return products.filter((product) => Array.isArray(product.supplier_ids) && product.supplier_ids.includes(supplierId));
-  }, [products, productsHaveSupplierLinks, supplierId]);
-
   const positionById = useMemo(() => {
     return new Map(locationPositions.map((position) => [position.id, position]));
   }, [locationPositions]);
@@ -655,20 +660,33 @@ export function ReceiptForm({
   }, [locationPositions, positionLabelById]);
 
   const visibleProductOptionsByLine = useMemo(() => {
+    const supplierProducts = supplierId
+      ? products.filter((product) => productHasSupplier(product, supplierId))
+      : [];
+    const supplierProductIds = new Set(supplierProducts.map((product) => product.id));
+
     return lines.map((line) => {
       const query = normalizeProductSearch(line.productSearch);
-      const base = supplierScopedProducts.length ? supplierScopedProducts : products;
 
-      if (!query) return base.slice(0, 12);
+      if (!query) {
+        const base = supplierProducts.length ? supplierProducts : products;
+        return base.slice(0, PRODUCT_PICKER_EMPTY_QUERY_LIMIT);
+      }
 
-      return base
-        .filter((product) => {
-          const label = formatProductOptionLabel(product);
-          return normalizeProductSearch(label).includes(query);
-        })
-        .slice(0, 12);
+      const matchesQuery = (product: ProductRow) => {
+        const label = formatProductOptionLabel(product);
+        return normalizeProductSearch(label).includes(query);
+      };
+
+      const supplierMatches = supplierProducts.filter(matchesQuery);
+      const catalogMatches = products.filter((product) => {
+        if (supplierProductIds.has(product.id)) return false;
+        return matchesQuery(product);
+      });
+
+      return [...supplierMatches, ...catalogMatches].slice(0, PRODUCT_PICKER_SEARCH_LIMIT);
     });
-  }, [lines, products, supplierScopedProducts]);
+  }, [lines, products, supplierId]);
 
   const receiptTotals = useMemo(() => {
     return lines.reduce(

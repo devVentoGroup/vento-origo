@@ -24,6 +24,10 @@ const OPERATIONAL_RECEIPT_LOCATION_ORDER = new Map(
   OPERATIONAL_RECEIPT_LOCATION_CODES.map((code, index) => [code, index])
 );
 
+const RECEIPT_CATALOG_INVENTORY_KINDS = ["ingredient", "finished", "resale", "packaging"];
+const RECEIPT_CATALOG_PAGE_SIZE = 1000;
+const PRODUCT_RELATION_BATCH_SIZE = 200;
+
 type SearchParams = {
   error?: string;
   ok?: string;
@@ -98,6 +102,13 @@ type ProductFormRow = ProductRow & {
   expiry_tracking: boolean;
   supplier_ids: string[];
   presentations: ProductPresentationOption[];
+};
+
+type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
+
+type DataFetchResult<T> = {
+  data: T[];
+  errorMessage: string | null;
 };
 
 type SupplierRow = {
@@ -385,6 +396,102 @@ function safeDecode(raw: string | undefined) {
   } catch {
     return raw;
   }
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  if (items.length === 0) return [];
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+async function fetchReceiptCatalogProducts(
+  supabase: SupabaseServerClient
+): Promise<DataFetchResult<ProductProfileWithProduct>> {
+  const rows: ProductProfileWithProduct[] = [];
+  let from = 0;
+
+  while (true) {
+    const to = from + RECEIPT_CATALOG_PAGE_SIZE - 1;
+    const { data, error } = await supabase
+      .from("product_inventory_profiles")
+      .select("product_id,lot_tracking,expiry_tracking,products!inner(id,name,unit,stock_unit_code,cost)")
+      .eq("track_inventory", true)
+      .in("inventory_kind", RECEIPT_CATALOG_INVENTORY_KINDS)
+      .eq("products.is_active", true)
+      .order("name", { foreignTable: "products", ascending: true })
+      .range(from, to);
+
+    if (error) return { data: [], errorMessage: error.message };
+
+    const batch = (data ?? []) as ProductProfileWithProduct[];
+    rows.push(...batch);
+
+    if (batch.length < RECEIPT_CATALOG_PAGE_SIZE) break;
+    from += RECEIPT_CATALOG_PAGE_SIZE;
+  }
+
+  return { data: rows, errorMessage: null };
+}
+
+async function fetchProductSuppliers(
+  supabase: SupabaseServerClient,
+  productIds: string[]
+): Promise<DataFetchResult<ProductSupplierRow>> {
+  const rows: ProductSupplierRow[] = [];
+  for (const batch of chunkArray(productIds, PRODUCT_RELATION_BATCH_SIZE)) {
+    const { data, error } = await supabase
+      .from("product_suppliers")
+      .select("product_id,supplier_id")
+      .in("product_id", batch);
+
+    if (error) return { data: [], errorMessage: error.message };
+    rows.push(...((data ?? []) as ProductSupplierRow[]));
+  }
+
+  return { data: rows, errorMessage: null };
+}
+
+async function fetchProductUomProfiles(
+  supabase: SupabaseServerClient,
+  productIds: string[]
+): Promise<DataFetchResult<ProductUomProfileRow>> {
+  const rows: ProductUomProfileRow[] = [];
+  for (const batch of chunkArray(productIds, PRODUCT_RELATION_BATCH_SIZE)) {
+    const { data, error } = await supabase
+      .from("product_uom_profiles")
+      .select("id,product_id,label,input_unit_code,qty_in_stock_unit")
+      .in("product_id", batch)
+      .eq("is_active", true)
+      .eq("source", "manual")
+      .order("label", { ascending: true });
+
+    if (error) return { data: [], errorMessage: error.message };
+    rows.push(...((data ?? []) as ProductUomProfileRow[]));
+  }
+
+  return { data: rows, errorMessage: null };
+}
+
+async function fetchProcurementSupplierProductCosts(
+  supabase: SupabaseServerClient,
+  productIds: string[]
+): Promise<DataFetchResult<ProcurementSupplierProductCostRow>> {
+  const rows: ProcurementSupplierProductCostRow[] = [];
+  for (const batch of chunkArray(productIds, PRODUCT_RELATION_BATCH_SIZE)) {
+    const { data, error } = await supabase
+      .from("procurement_supplier_product_costs")
+      .select("supplier_id,product_id,input_uom_profile_id,input_unit_code,conversion_factor_to_stock,last_net_unit_cost,avg_net_unit_cost,last_stock_unit_cost,avg_stock_unit_cost,last_received_at")
+      .in("product_id", batch)
+      .eq("is_active", true);
+
+    if (error) return { data: [], errorMessage: error.message };
+    rows.push(...((data ?? []) as ProcurementSupplierProductCostRow[]));
+  }
+
+  return { data: rows, errorMessage: null };
 }
 
 async function createReceipt(formData: FormData) {
@@ -1164,20 +1271,18 @@ export default async function ReceiptsPage({
     redirect("/no-access?reason=no_site&returnTo=/receipts");
   }
 
-  const [{ data: suppliersData }, { data: productsData }, { data: locationsData }] = await Promise.all([
+  const [
+    { data: suppliersData },
+    receiptCatalogResult,
+    { data: locationsData },
+  ] = await Promise.all([
     supabase
       .from("suppliers")
       .select("id,name")
       .eq("is_active", true)
       .order("name", { ascending: true })
       .limit(300),
-    supabase
-      .from("product_inventory_profiles")
-      .select("product_id,lot_tracking,expiry_tracking,products(id,name,unit,stock_unit_code,cost)")
-      .eq("track_inventory", true)
-      .in("inventory_kind", ["ingredient", "finished", "resale", "packaging"])
-      .order("name", { foreignTable: "products", ascending: true })
-      .limit(500),
+    fetchReceiptCatalogProducts(supabase),
     supabase
       .from("inventory_locations")
       .select("id,code,zone,description")
@@ -1187,6 +1292,11 @@ export default async function ReceiptsPage({
       .limit(300),
   ]);
 
+  if (receiptCatalogResult.errorMessage) {
+    redirect("/receipts?error=" + encodeURIComponent(receiptCatalogResult.errorMessage));
+  }
+
+  const productsData = receiptCatalogResult.data;
   const suppliers = (suppliersData ?? []) as SupplierRow[];
   const baseProducts = ((productsData ?? []) as ProductProfileWithProduct[])
     .map((row) => {
@@ -1198,39 +1308,37 @@ export default async function ReceiptsPage({
         expiry_tracking: Boolean(row.expiry_tracking),
       };
     })
-    .filter((row): row is ProductRow & { lot_tracking: boolean; expiry_tracking: boolean } => Boolean(row));
+    .filter((row): row is ProductRow & { lot_tracking: boolean; expiry_tracking: boolean } => Boolean(row))
+    .sort((a, b) =>
+      String(a.name ?? a.id).localeCompare(String(b.name ?? b.id), "es", {
+        numeric: true,
+        sensitivity: "base",
+      })
+    );
 
   const productIdsForCatalog = baseProducts.map((product) => product.id);
 
   const [
-    { data: productSuppliersData },
-    { data: productUomProfilesData },
-    { data: procurementCostData },
-  ] =
-    productIdsForCatalog.length > 0
-      ? await Promise.all([
-          supabase
-            .from("product_suppliers")
-            .select("product_id,supplier_id")
-            .in("product_id", productIdsForCatalog),
-          supabase
-            .from("product_uom_profiles")
-            .select("id,product_id,label,input_unit_code,qty_in_stock_unit")
-            .in("product_id", productIdsForCatalog)
-            .eq("is_active", true)
-            .eq("source", "manual")
-            .order("label", { ascending: true }),
-          supabase
-            .from("procurement_supplier_product_costs")
-            .select("supplier_id,product_id,input_uom_profile_id,input_unit_code,conversion_factor_to_stock,last_net_unit_cost,avg_net_unit_cost,last_stock_unit_cost,avg_stock_unit_cost,last_received_at")
-            .in("product_id", productIdsForCatalog)
-            .eq("is_active", true),
-        ])
-      : [
-          { data: [] as ProductSupplierRow[] },
-          { data: [] as ProductUomProfileRow[] },
-          { data: [] as ProcurementSupplierProductCostRow[] },
-        ];
+    productSuppliersResult,
+    productUomProfilesResult,
+    procurementCostResult,
+  ] = await Promise.all([
+    fetchProductSuppliers(supabase, productIdsForCatalog),
+    fetchProductUomProfiles(supabase, productIdsForCatalog),
+    fetchProcurementSupplierProductCosts(supabase, productIdsForCatalog),
+  ]);
+
+  const catalogRelationError =
+    productSuppliersResult.errorMessage ??
+    productUomProfilesResult.errorMessage ??
+    procurementCostResult.errorMessage;
+  if (catalogRelationError) {
+    redirect("/receipts?error=" + encodeURIComponent(catalogRelationError));
+  }
+
+  const productSuppliersData = productSuppliersResult.data;
+  const productUomProfilesData = productUomProfilesResult.data;
+  const procurementCostData = procurementCostResult.data;
 
   const supplierIdsByProductId = new Map<string, Set<string>>();
   for (const row of (productSuppliersData ?? []) as ProductSupplierRow[]) {
