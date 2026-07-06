@@ -734,6 +734,38 @@ export function ReceiptForm({
   }, [lines]);
 
   useEffect(() => {
+    if (!selectedPurchaseOrderId && !isCorrectionMode) return;
+
+    const initialRows = buildInitialRows({ prefillRows, defaultLocationId });
+
+    window.sessionStorage.removeItem(storageKey);
+    window.sessionStorage.removeItem(legacyStorageKey);
+
+    setSupplierId(prefillSupplierId);
+    setInvoiceNumber(prefillInvoiceNumber);
+    setNotes(prefillNotes);
+    setReceivedAt(prefillReceivedAt);
+    setEmergencyReason("");
+    setIsExceptionReceipt(false);
+    setActiveProductPickerIndex(null);
+    setLines(initialRows);
+    setFieldErrors({});
+    setRequestDraft(null);
+    setMasterDataRequests([]);
+  }, [
+    selectedPurchaseOrderId,
+    isCorrectionMode,
+    correctionEntryId,
+    prefillSupplierId,
+    prefillInvoiceNumber,
+    prefillNotes,
+    prefillReceivedAt,
+    prefillRows,
+    storageKey,
+    legacyStorageKey,
+  ]);
+
+  useEffect(() => {
     window.sessionStorage.removeItem(legacyStorageKey);
   }, [legacyStorageKey]);
 

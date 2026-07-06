@@ -24,7 +24,7 @@ const OPERATIONAL_RECEIPT_LOCATION_ORDER = new Map(
   OPERATIONAL_RECEIPT_LOCATION_CODES.map((code, index) => [code, index])
 );
 
-const RECEIPT_CATALOG_INVENTORY_KINDS = ["ingredient", "finished", "resale", "packaging"];
+const RECEIPT_CATALOG_INVENTORY_KINDS = ["ingredient", "resale", "packaging"];
 const RECEIPT_CATALOG_PAGE_SIZE = 1000;
 const PRODUCT_RELATION_BATCH_SIZE = 200;
 const RECEIPT_ACTION_WINDOW_MINUTES = 30;
