@@ -65,6 +65,7 @@ type PrefillRow = {
   unitCost: number;
   purchaseOrderItemId: string;
   presentationId: string;
+  pendingMasterDataRequestId?: string;
   inputUnitCode: string;
   inputUnitLabel: string;
   conversionFactorToStock: number;
@@ -130,6 +131,7 @@ type ReceiptLine = {
   notes: string;
   purchaseOrderItemId: string;
   presentationId: string;
+  pendingMasterDataRequestId: string;
   inputUnitCode: string;
   inputUnitLabel: string;
   conversionFactorToStock: string;
@@ -196,6 +198,7 @@ function makeEmptyLine(defaultLocationId: string): ReceiptLine {
     notes: "",
     purchaseOrderItemId: "",
     presentationId: "",
+    pendingMasterDataRequestId: "",
     inputUnitCode: "",
     inputUnitLabel: "",
     conversionFactorToStock: "1",
@@ -224,6 +227,7 @@ function buildInitialRows(params: {
     notes: row.notes ?? "",
     purchaseOrderItemId: row.purchaseOrderItemId,
     presentationId: row.presentationId,
+    pendingMasterDataRequestId: "",
     inputUnitCode: row.inputUnitCode,
     inputUnitLabel: row.inputUnitLabel,
     conversionFactorToStock: String(row.conversionFactorToStock || 1),
@@ -251,6 +255,7 @@ function normalizeStoredLines(
     notes: line.notes ?? "",
     purchaseOrderItemId: line.purchaseOrderItemId ?? "",
     presentationId: line.presentationId ?? "",
+    pendingMasterDataRequestId: line.pendingMasterDataRequestId ?? "",
     inputUnitCode: line.inputUnitCode ?? "",
     inputUnitLabel: line.inputUnitLabel ?? "",
     conversionFactorToStock: line.conversionFactorToStock ?? "1",
@@ -616,8 +621,6 @@ export function ReceiptForm({
   const [lines, setLines] = useState<ReceiptLine[]>(() => {
     const initialRows = buildInitialRows({ prefillRows, defaultLocationId });
 
-    // When receiving against a PO or correcting an existing receipt, always trust the server prefill.
-    // A stale browser draft can otherwise hide the product lines loaded from the server.
     if (selectedPurchaseOrderId || isCorrectionMode) return initialRows;
 
     return storedDraft?.lines?.length ? storedDraft.lines : initialRows;
@@ -627,6 +630,8 @@ export function ReceiptForm({
   const [masterDataRequests, setMasterDataRequests] = useState<MasterDataRequestPayload[]>(() =>
     normalizeMasterDataRequests(storedDraft?.masterDataRequests)
   );
+  const [isSaving, setIsSaving] = useState(false);
+  const [clientSubmitError, setClientSubmitError] = useState("");
 
   const entryMode = selectedPurchaseOrderId ? "normal" : "emergency";
   const isPurchaseOrderReceipt = entryMode === "normal";
@@ -768,6 +773,8 @@ export function ReceiptForm({
     setFieldErrors({});
     setRequestDraft(null);
     setMasterDataRequests([]);
+    setIsSaving(false);
+    setClientSubmitError("");
   }, [
     selectedPurchaseOrderId,
     isCorrectionMode,
@@ -801,6 +808,8 @@ export function ReceiptForm({
     setFieldErrors({});
     setRequestDraft(null);
     setMasterDataRequests([]);
+    setIsSaving(false);
+    setClientSubmitError("");
   }, [isCorrectionMode, legacyStorageKey, prefillReceivedAt, prefillRows, prefillSupplierId, selectedPurchaseOrderId, storageKey, submitSuccess]);
 
   useEffect(() => {
@@ -820,6 +829,8 @@ export function ReceiptForm({
     setFieldErrors({});
     setRequestDraft(null);
     setMasterDataRequests([]);
+    setIsSaving(false);
+    setClientSubmitError("");
   }, [legacyStorageKey, siteId, storageKey]);
 
   useEffect(() => {
@@ -877,6 +888,7 @@ export function ReceiptForm({
       productId: product.id,
       productSearch: formatProductOptionLabel(product),
       presentationId: "",
+      pendingMasterDataRequestId: "",
       inputUnitCode: "",
       inputUnitLabel: "",
       conversionFactorToStock: "1",
@@ -895,6 +907,7 @@ export function ReceiptForm({
       inputUnitLabel,
       inputUnitCode: normalizeUnitCode(inputUnitLabel) || stockUnitCode,
       presentationId: "",
+      pendingMasterDataRequestId: "",
     });
   };
 
@@ -976,8 +989,6 @@ export function ReceiptForm({
         return;
       }
 
-      // La solicitud queda pendiente para maestro de datos. No se usa como presentación
-      // real de recepción hasta que exista como presentación manual activa en catálogo.
     }
 
     if (requestDraft.kind === "new_product" && line) {
@@ -986,8 +997,11 @@ export function ReceiptForm({
       });
     }
 
+    const inputUnitCode = computeRequestInputUnitCode(requestDraft);
+    const inputUnitLabel = requestDraft.inputUnitLabel.trim() || requestedLabel;
+    const requestId = `${requestDraft.kind}:${requestDraft.lineIndex}:${Date.now()}`;
     const payload: MasterDataRequestPayload = {
-      id: `${requestDraft.kind}:${requestDraft.lineIndex}:${Date.now()}`,
+      id: requestId,
       kind: requestDraft.kind,
       status: "pending_review",
       source: "origo_receipt",
@@ -998,20 +1012,37 @@ export function ReceiptForm({
       productId: requestDraft.kind === "new_presentation" ? line?.productId || null : null,
       productName: requestDraft.kind === "new_presentation" ? product?.name ?? null : null,
       requestedLabel,
-      inputUnitCode: computeRequestInputUnitCode(requestDraft),
-      inputUnitLabel: requestDraft.inputUnitLabel.trim() || requestedLabel,
+      inputUnitCode,
+      inputUnitLabel,
       conversionFactorToStock:
         requestDraft.kind === "new_presentation" && Number.isFinite(factor) && factor > 0 ? factor : null,
       stockUnitCode: requestDraft.stockUnitCode || getProductStockUnitCode(product),
-      unitCost: Number(requestDraft.unitCost || 0) > 0 ? Number(requestDraft.unitCost) : null,
+      unitCost: null,
       notes: requestDraft.notes.trim() || null,
       createdAt: new Date().toISOString(),
     };
 
-    setMasterDataRequests((prev) => [...prev, payload]);
+    if (requestDraft.kind === "new_presentation") {
+      updateLine(requestDraft.lineIndex, {
+        presentationId: "",
+        pendingMasterDataRequestId: requestId,
+        inputUnitCode,
+        inputUnitLabel,
+        conversionFactorToStock: String(factor),
+        stockUnitCode: requestDraft.stockUnitCode || getProductStockUnitCode(product),
+      });
+    }
+
+    setMasterDataRequests((prev) => [
+      ...prev.filter(
+        (request) => !(request.kind === payload.kind && request.lineIndex === payload.lineIndex)
+      ),
+      payload,
+    ]);
     setFieldErrors((prev) => {
       const next = { ...prev };
       delete next.master_data_request;
+      delete next[`line_${requestDraft.lineIndex}_presentation`];
       return next;
     });
     setRequestDraft(null);
@@ -1019,6 +1050,20 @@ export function ReceiptForm({
 
   const removeMasterDataRequest = (requestId: string) => {
     setMasterDataRequests((prev) => prev.filter((request) => request.id !== requestId));
+    setLines((prev) =>
+      prev.map((line) =>
+        line.pendingMasterDataRequestId === requestId
+          ? {
+              ...line,
+              pendingMasterDataRequestId: "",
+              presentationId: "",
+              inputUnitCode: "",
+              inputUnitLabel: "",
+              conversionFactorToStock: "1",
+            }
+          : line
+      )
+    );
   };
 
   const handleFormKeyDown = (event: KeyboardEvent<HTMLFormElement>) => {
@@ -1030,6 +1075,10 @@ export function ReceiptForm({
 
     event.preventDefault();
   };
+
+  const hasPendingMasterDataReview = masterDataRequests.some(
+    (request) => request.kind === "new_presentation"
+  );
 
   const handleClientValidation = (event: FormEvent<HTMLFormElement>) => {
     const nextErrors: Record<string, string> = {};
@@ -1044,7 +1093,7 @@ export function ReceiptForm({
       const isPurchaseOrderLine = isPurchaseOrderReceipt && Boolean(line.purchaseOrderItemId);
       const hasPresentationSnapshot = isPurchaseOrderLine
         ? Boolean(line.inputUnitLabel) && factor > 0
-        : Boolean(line.presentationId) && Boolean(line.inputUnitLabel) && factor > 0;
+        : (Boolean(line.presentationId) || Boolean(line.pendingMasterDataRequestId)) && Boolean(line.inputUnitLabel) && factor > 0;
 
       return Boolean(line.productId) && hasPresentationSnapshot && Number.isFinite(qty) && qty > 0;
     });
@@ -1067,8 +1116,8 @@ export function ReceiptForm({
         nextErrors[`line_${index}_presentation`] = "Define una presentación válida.";
       }
 
-      if (!line.purchaseOrderItemId && !line.presentationId) {
-        nextErrors[`line_${index}_presentation`] = "Selecciona una presentación manual activa.";
+      if (!line.purchaseOrderItemId && !line.presentationId && !line.pendingMasterDataRequestId) {
+        nextErrors[`line_${index}_presentation`] = "Selecciona una presentación activa o agrega una solicitud de nueva presentación.";
       }
 
       const product = line.productId ? productMap.get(line.productId) : null;
@@ -1083,13 +1132,22 @@ export function ReceiptForm({
     setFieldErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) {
       event.preventDefault();
+      setIsSaving(false);
+      return;
     }
+
+    setClientSubmitError("");
+    setIsSaving(true);
+    window.setTimeout(() => {
+      setIsSaving(false);
+      setClientSubmitError("Si el servidor rechazó la recepción, revisa el mensaje y vuelve a intentar.");
+    }, 12000);
   };
 
   return (
     <form
       action={action}
-      className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_360px]"
+      className="grid min-w-0 items-start gap-6 2xl:grid-cols-[minmax(0,1fr)_360px]"
       onKeyDown={handleFormKeyDown}
       onSubmit={handleClientValidation}
     >
@@ -1099,6 +1157,12 @@ export function ReceiptForm({
       <input type="hidden" name="correction_entry_id" value={correctionEntryId} />
       <input type="hidden" name="entry_mode" value={entryMode} />
       <input type="hidden" name="emergency_reason" value={effectiveEmergencyReason} />
+      <input type="hidden" name="requires_master_data_review" value={hasPendingMasterDataReview ? "true" : "false"} />
+      <input
+        type="hidden"
+        name="receipt_review_reason"
+        value={hasPendingMasterDataReview ? "pending_presentation_review" : ""}
+      />
       {masterDataRequests.map((request) => (
         <input
           key={request.id}
@@ -1108,7 +1172,7 @@ export function ReceiptForm({
         />
       ))}
 
-      <div className="space-y-5">
+      <div className="min-w-0 space-y-5">
         <section className="rounded-[1.75rem] border border-[var(--ui-border)] bg-white p-5 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
@@ -1325,7 +1389,7 @@ export function ReceiptForm({
               const isPurchaseOrderLine = isPurchaseOrderReceipt && Boolean(line.purchaseOrderItemId);
 
               return (
-                <div key={`line-${index}`} className="rounded-[1.5rem] border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-4">
+                <div key={`line-${index}`} className="min-w-0 rounded-[1.5rem] border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <div className="text-sm font-bold text-[var(--ui-text)]">
@@ -1358,8 +1422,8 @@ export function ReceiptForm({
                     </div>
                   </div>
 
-                  <div className="mt-4 grid gap-4 2xl:grid-cols-[minmax(260px,1.4fr)_minmax(260px,1fr)_minmax(260px,1fr)]">
-                    <div className="rounded-2xl border border-[var(--ui-border)] bg-white p-4">
+                  <div className="mt-4 grid min-w-0 gap-4 xl:grid-cols-2 2xl:grid-cols-[minmax(260px,1.4fr)_minmax(260px,1fr)_minmax(260px,1fr)]">
+                    <div className="min-w-0 rounded-2xl border border-[var(--ui-border)] bg-white p-4">
                       <div className="flex items-center justify-between gap-3">
                         <div>
                           <div className="text-sm font-bold text-[var(--ui-text)]">Insumo</div>
@@ -1391,6 +1455,7 @@ export function ReceiptForm({
                                 productSearch: e.target.value,
                                 productId: "",
                                 presentationId: "",
+                                pendingMasterDataRequestId: "",
                               });
                               setActiveProductPickerIndex(index);
                             }}
@@ -1465,7 +1530,7 @@ export function ReceiptForm({
                       ) : null}
                     </div>
 
-                    <div className="rounded-2xl border border-[var(--ui-border)] bg-white p-4">
+                    <div className="min-w-0 rounded-2xl border border-[var(--ui-border)] bg-white p-4">
                       <div className="text-sm font-bold text-[var(--ui-text)]">Presentación y cantidad</div>
                       <div className="mt-1 text-xs text-[var(--ui-muted)]">
                         La cantidad recibida se convierte a unidad stock.
@@ -1476,6 +1541,12 @@ export function ReceiptForm({
                           <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-950">
                             Este insumo no tiene presentaciones manuales activas. Solicita una nueva presentación
                             para revisión de maestro de datos antes de registrarlo.
+                          </div>
+                        ) : null}
+
+                        {line.pendingMasterDataRequestId ? (
+                          <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-950">
+                            Esta línea usa una presentación nueva pendiente. La recepción quedará en revisión y no moverá inventario hasta aprobación.
                           </div>
                         ) : null}
 
@@ -1490,6 +1561,7 @@ export function ReceiptForm({
                                 if (!presentation) {
                                   updateLine(index, {
                                     presentationId: "",
+                                    pendingMasterDataRequestId: "",
                                     inputUnitCode: "",
                                     inputUnitLabel: "",
                                     conversionFactorToStock: "1",
@@ -1502,6 +1574,7 @@ export function ReceiptForm({
 
                                 updateLine(index, {
                                   presentationId: presentation.id,
+                                  pendingMasterDataRequestId: "",
                                   inputUnitCode: presentation.input_unit_code,
                                   inputUnitLabel: presentation.label,
                                   conversionFactorToStock: String(presentationFactor || 1),
@@ -1545,6 +1618,15 @@ export function ReceiptForm({
                           </label>
                         </div>
 
+                        <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3 text-xs text-[var(--ui-muted)]">
+                          <div className="font-semibold text-[var(--ui-text)]">Conversión</div>
+                          <div className="mt-1">
+                            {cost.inputQty > 0
+                              ? `${formatQty(cost.inputQty)} ${inputUnitLabel} = ${formatQty(cost.stockQty)} ${stockUnitCode}`
+                              : `1 ${inputUnitLabel || stockUnitCode} = ${formatQty(cost.conversionFactorToStock)} ${stockUnitCode}`}
+                          </div>
+                        </div>
+
                         {!isPurchaseOrderReceipt ? (
                           <button
                             type="button"
@@ -1565,6 +1647,8 @@ export function ReceiptForm({
                       <input type="hidden" name="item_input_unit_label" value={inputUnitLabel} />
                       <input type="hidden" name="item_conversion_factor_to_stock" value={String(cost.conversionFactorToStock || 1)} />
                       <input type="hidden" name="item_stock_unit_code" value={stockUnitCode} />
+                      <input type="hidden" name="item_pending_master_data_request_id" value={line.pendingMasterDataRequestId} />
+                      <input type="hidden" name="item_has_pending_master_data_request" value={line.pendingMasterDataRequestId ? "true" : "false"} />
 
                       {fieldErrors[`line_${index}_quantity`] ? (
                         <p className="mt-2 text-xs text-rose-600">{fieldErrors[`line_${index}_quantity`]}</p>
@@ -1574,7 +1658,7 @@ export function ReceiptForm({
                       ) : null}
                     </div>
 
-                    <div className="rounded-2xl border border-[var(--ui-border)] bg-white p-4">
+                    <div className="min-w-0 rounded-2xl border border-[var(--ui-border)] bg-white p-4">
                       <div className="text-sm font-bold text-[var(--ui-text)]">Costo e impuestos</div>
                       <div className="mt-1 text-xs text-[var(--ui-muted)]">
                         El costo de inventario se calcula con neto sin impuesto.
@@ -1582,7 +1666,7 @@ export function ReceiptForm({
 
                       <div className="mt-3 grid gap-3 sm:grid-cols-3">
                         <label className="sm:col-span-2">
-                          <span className="ui-label">Precio digitado</span>
+                          <span className="ui-label">Precio factura por presentación</span>
                           <input
                             className="ui-input mt-1"
                             type="number"
@@ -1594,7 +1678,7 @@ export function ReceiptForm({
                         </label>
 
                         <label>
-                          <span className="ui-label">El precio digitado</span>
+                          <span className="ui-label">Este precio</span>
                           <select
                             className="ui-input mt-1"
                             value={line.costInputMode}
@@ -1633,20 +1717,28 @@ export function ReceiptForm({
                       <div className="mt-3 rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3 text-xs">
                         <div className="grid gap-2 sm:grid-cols-2">
                           <div>
-                            <span className="text-[var(--ui-muted)]">Base sin impuestos</span>
-                            <div className="font-bold text-[var(--ui-text)]">{formatAmount(cost.netTotal)}</div>
+                            <span className="text-[var(--ui-muted)]">Neto por presentación</span>
+                            <div className="font-bold text-[var(--ui-text)]">{formatAmount(cost.netUnitCost)}</div>
                           </div>
                           <div>
-                            <span className="text-[var(--ui-muted)]">IVA</span>
+                            <span className="text-[var(--ui-muted)]">Total por presentación</span>
+                            <div className="font-bold text-[var(--ui-text)]">{formatAmount(cost.grossUnitCost)}</div>
+                          </div>
+                          <div>
+                            <span className="text-[var(--ui-muted)]">Costo unidad stock</span>
+                            <div className="font-bold text-[var(--ui-text)]">{formatAmount(cost.stockUnitCost)} / {stockUnitCode}</div>
+                          </div>
+                          <div>
+                            <span className="text-[var(--ui-muted)]">Total factura línea</span>
+                            <div className="font-bold text-[var(--ui-text)]">{formatAmount(cost.grossTotal)}</div>
+                          </div>
+                          <div>
+                            <span className="text-[var(--ui-muted)]">IVA línea</span>
                             <div className="font-bold text-[var(--ui-text)]">{formatAmount(cost.ivaAmount)}</div>
                           </div>
                           <div>
-                            <span className="text-[var(--ui-muted)]">ICUI</span>
+                            <span className="text-[var(--ui-muted)]">ICUI línea</span>
                             <div className="font-bold text-[var(--ui-text)]">{formatAmount(cost.icuiAmount)}</div>
-                          </div>
-                          <div>
-                            <span className="text-[var(--ui-muted)]">Total línea</span>
-                            <div className="font-bold text-[var(--ui-text)]">{formatAmount(cost.grossTotal)}</div>
                           </div>
                         </div>
                       </div>
@@ -1685,8 +1777,8 @@ export function ReceiptForm({
                       </div>
 
                       {requestDraft.kind === "new_presentation" && product ? (
-                        <div className="mt-3 rounded-2xl border border-amber-200 bg-white px-3 py-2 text-xs">
-                          Producto: <span className="font-semibold">{formatProductOptionLabel(product)}</span> · Unidad stock: {stockUnitCode}
+                        <div className="mt-3 rounded-2xl border border-amber-200 bg-white px-3 py-2 text-xs leading-5">
+                          Producto: <span className="font-semibold">{formatProductOptionLabel(product)}</span> · Unidad stock: {stockUnitCode}. El precio se toma del bloque Costo e impuestos de esta línea.
                         </div>
                       ) : null}
 
@@ -1741,17 +1833,7 @@ export function ReceiptForm({
                                 onChange={(e) => updateRequestDraft({ conversionFactorToStock: e.target.value })}
                               />
                             </label>
-                            <label className="flex flex-col gap-1">
-                              <span className="ui-label">Costo neto sugerido</span>
-                              <input
-                                className="ui-input bg-white"
-                                type="number"
-                                step="0.01"
-                                min="0"
-                                value={requestDraft.unitCost}
-                                onChange={(e) => updateRequestDraft({ unitCost: e.target.value })}
-                              />
-                            </label>
+
                           </>
                         )}
 
@@ -1889,7 +1971,7 @@ export function ReceiptForm({
         </section>
       </div>
 
-      <aside className="xl:sticky xl:top-28 xl:max-h-[calc(100vh-8rem)] xl:self-start xl:overflow-y-auto">
+      <aside className="min-w-0 2xl:sticky 2xl:top-28 2xl:max-h-[calc(100vh-8rem)] 2xl:self-start 2xl:overflow-y-auto">
         <div className="rounded-[1.75rem] border border-[var(--ui-border)] bg-white p-5 shadow-sm">
           <div className="text-lg font-bold text-[var(--ui-text)]">Resumen de recepción</div>
           <p className="mt-1 text-sm text-[var(--ui-muted)]">
@@ -1961,14 +2043,14 @@ export function ReceiptForm({
               </div>
             ) : null}
 
-            {serverErrorMessage ? (
+            {serverErrorMessage || clientSubmitError ? (
               <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
-                {serverErrorMessage}
+                {serverErrorMessage || clientSubmitError}
               </div>
             ) : null}
 
-            <button type="submit" className="ui-btn ui-btn--brand w-full">
-              {isCorrectionMode ? "Guardar corrección" : "Registrar recepción"}
+            <button type="submit" className="ui-btn ui-btn--brand w-full" disabled={isSaving}>
+              {isSaving ? "Guardando..." : isCorrectionMode ? "Guardar corrección" : hasPendingMasterDataReview ? "Enviar recepción a revisión" : "Registrar recepción"}
             </button>
 
             <button
@@ -1987,6 +2069,8 @@ export function ReceiptForm({
                 setIsExceptionReceipt(false);
                 setMasterDataRequests([]);
                 setRequestDraft(null);
+                setIsSaving(false);
+                setClientSubmitError("");
               }}
             >
               Limpiar borrador

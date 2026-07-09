@@ -494,6 +494,8 @@ function formatEntryStatus(status: string | null) {
       return "Reversada";
     case "corrected":
       return "Corregida";
+    case "pending_review":
+      return "En revisión";
     case "draft":
       return "Borrador";
     case "cancelled":
@@ -768,6 +770,25 @@ async function createReceipt(formData: FormData) {
   const taxAmounts = formData
     .getAll("item_tax_amount")
     .map((value) => asNumber(String(value).trim()));
+  const inputUnitCodes = formData
+    .getAll("item_input_unit_code")
+    .map((value) => String(value).trim().toLowerCase());
+  const inputUnitLabels = formData
+    .getAll("item_input_unit_label")
+    .map((value) => String(value).trim());
+  const conversionFactors = formData
+    .getAll("item_conversion_factor_to_stock")
+    .map((value) => asNumber(String(value).trim()));
+  const stockUnitCodes = formData
+    .getAll("item_stock_unit_code")
+    .map((value) => String(value).trim().toLowerCase());
+  const pendingMasterDataRequestIds = formData
+    .getAll("item_pending_master_data_request_id")
+    .map((value) => String(value).trim());
+  const hasPendingMasterDataRequestValues = formData
+    .getAll("item_has_pending_master_data_request")
+    .map((value) => String(value).trim() === "true");
+  const requiresMasterDataReviewInput = String(formData.get("requires_master_data_review") ?? "").trim() === "true";
 
   const productLookupIds = Array.from(new Set(productIds.filter(Boolean)));
   const { data: productRowsData } = productLookupIds.length
@@ -823,6 +844,12 @@ async function createReceipt(formData: FormData) {
     ((selectedPresentationRowsData ?? []) as ProductUomProfileRow[]).map((row) => [row.id, row])
   );
 
+  const pendingPresentationRequestByLineIndex = new Map<number, NormalizedMasterDataRequest>();
+  for (const request of masterDataRequests) {
+    if (request.kind !== "new_presentation") continue;
+    pendingPresentationRequestByLineIndex.set(request.lineIndex, request);
+  }
+
   const items = productIds
     .map((productId, index) => {
       if (!productId) return null;
@@ -848,10 +875,29 @@ async function createReceipt(formData: FormData) {
       const selectedPresentation = selectedPresentationId
         ? selectedPresentationById.get(selectedPresentationId)
         : null;
+      const pendingRequestId = pendingMasterDataRequestIds[index] || "";
+      const pendingPresentationRequest = pendingRequestId
+        ? masterDataRequests.find(
+            (request) =>
+              request.kind === "new_presentation" &&
+              request.lineIndex === index &&
+              String(request.payload.id ?? "") === pendingRequestId
+          ) ?? null
+        : pendingPresentationRequestByLineIndex.get(index) ?? null;
+      const hasPendingPresentationRequest =
+        Boolean(hasPendingMasterDataRequestValues[index]) && Boolean(pendingPresentationRequest);
 
       if (!poItemId) {
-        if (!selectedPresentation || selectedPresentation.product_id !== productId) {
-          redirect(createErrorUrl("Selecciona una presentación manual activa para cada item recibido."));
+        if (selectedPresentation && selectedPresentation.product_id !== productId) {
+          redirect(createErrorUrl("Hay una presentación que no pertenece al insumo seleccionado."));
+        }
+
+        if (pendingPresentationRequest && pendingPresentationRequest.productId !== productId) {
+          redirect(createErrorUrl("Hay una solicitud de presentación que no pertenece al insumo seleccionado."));
+        }
+
+        if (!selectedPresentation && !hasPendingPresentationRequest) {
+          redirect(createErrorUrl("Selecciona una presentación activa o agrega una solicitud de nueva presentación para cada item recibido."));
         }
       }
 
@@ -859,19 +905,27 @@ async function createReceipt(formData: FormData) {
 
       const stockUnitCode = poItemId
         ? String(poItem?.stock_unit_code ?? poItem?.input_unit_code ?? fallbackStockUnitCode).trim().toLowerCase()
-        : fallbackStockUnitCode || "un";
+        : selectedPresentation
+          ? fallbackStockUnitCode || "un"
+          : String(pendingPresentationRequest?.stockUnitCode ?? stockUnitCodes[index] ?? fallbackStockUnitCode ?? "un").trim().toLowerCase() || "un";
 
       const inputUnitCode = poItemId
         ? String(poItem?.input_unit_code ?? stockUnitCode).trim().toLowerCase()
-        : String(selectedPresentation?.input_unit_code ?? stockUnitCode).trim().toLowerCase();
+        : selectedPresentation
+          ? String(selectedPresentation.input_unit_code ?? stockUnitCode).trim().toLowerCase()
+          : String(pendingPresentationRequest?.inputUnitCode ?? inputUnitCodes[index] ?? stockUnitCode).trim().toLowerCase() || stockUnitCode;
 
       const inputUnitLabel = poItemId
         ? String(poItem?.input_unit_label ?? poItem?.unit ?? inputUnitCode).trim()
-        : String(selectedPresentation?.label ?? inputUnitCode).trim();
+        : selectedPresentation
+          ? String(selectedPresentation.label ?? inputUnitCode).trim()
+          : String(pendingPresentationRequest?.inputUnitLabel ?? inputUnitLabels[index] ?? pendingPresentationRequest?.requestedLabel ?? inputUnitCode).trim();
 
       const conversionFactorToStockRaw = poItemId
         ? Number(poItem?.conversion_factor_to_stock ?? 0)
-        : Number(selectedPresentation?.qty_in_stock_unit ?? 0);
+        : selectedPresentation
+          ? Number(selectedPresentation.qty_in_stock_unit ?? 0)
+          : Number(pendingPresentationRequest?.conversionFactorToStock ?? conversionFactors[index] ?? 0);
 
       const conversionFactorToStock =
         Number.isFinite(conversionFactorToStockRaw) && conversionFactorToStockRaw > 0
@@ -939,6 +993,7 @@ async function createReceipt(formData: FormData) {
       }
 
       return {
+        line_index: index,
         product_id: productId,
         location_id: locationIds[index] || "",
         location_position_id: locationPositionIds[index] || null,
@@ -949,7 +1004,8 @@ async function createReceipt(formData: FormData) {
         quantity_received: quantityReceived,
         quantity_declared: quantityReceived,
         stock_unit_code: stockUnitCode || "un",
-        input_uom_profile_id: inputUomProfileIds[index] || poItem?.input_uom_profile_id || null,
+        input_uom_profile_id: hasPendingPresentationRequest ? null : inputUomProfileIds[index] || poItem?.input_uom_profile_id || null,
+        pending_master_data_request_id: hasPendingPresentationRequest ? String(pendingPresentationRequest?.payload.id ?? pendingRequestId) : null,
         input_unit_cost: computedNetUnitCost > 0 ? roundQuantity(computedNetUnitCost, 6) : 0,
         stock_unit_cost: stockUnitCost > 0 ? roundQuantity(stockUnitCost, 6) : 0,
         line_total_cost: netTotalCost,
@@ -973,12 +1029,20 @@ async function createReceipt(formData: FormData) {
         notes: lineNotes[index] || null,
         apply_auto_cost:
           Boolean(profile?.track_inventory) && profile?.costing_mode === "auto_primary_supplier",
+        has_pending_master_data_request: hasPendingPresentationRequest,
       };
     })
     .filter((row): row is NonNullable<typeof row> => Boolean(row));
 
   if (!items.length) {
     redirect(createErrorUrl("Agrega al menos un item con cantidad mayor a 0."));
+  }
+
+  const hasPendingMasterDataReview =
+    requiresMasterDataReviewInput || items.some((item) => item.has_pending_master_data_request);
+
+  if (hasPendingMasterDataReview && correctionEntryId) {
+    redirect(createErrorUrl("No se puede corregir una recepción usando presentaciones nuevas pendientes. Aprueba la presentación primero y luego corrige."));
   }
 
   if (items.some((item) => !item.location_id)) {
@@ -1088,7 +1152,7 @@ async function createReceipt(formData: FormData) {
     }
   }
 
-  const status = "received";
+  const status = hasPendingMasterDataReview ? "pending_review" : "received";
   let entryInsert = await supabase
     .from("inventory_entries")
     .insert({
@@ -1170,9 +1234,68 @@ async function createReceipt(formData: FormData) {
     expiry_date: item.expiry_date,
     notes: item.notes,
   }));
-  const { error: entryItemsErr } = await supabase.from("inventory_entry_items").insert(entryItemRows);
+  const { data: insertedEntryItems, error: entryItemsErr } = await supabase
+    .from("inventory_entry_items")
+    .insert(entryItemRows)
+    .select("id");
   if (entryItemsErr) {
     redirect(createErrorUrl(entryItemsErr.message));
+  }
+
+  const entryItemIdByLineIndex = new Map<number, string>();
+  ((insertedEntryItems ?? []) as Array<{ id: string }>).forEach((row, index) => {
+    const item = items[index];
+    if (item) entryItemIdByLineIndex.set(item.line_index, row.id);
+  });
+
+  const itemByLineIndex = new Map(items.map((item) => [item.line_index, item]));
+
+  if (hasPendingMasterDataReview) {
+    if (masterDataRequests.length > 0) {
+      const requestRows = masterDataRequests.map((request) => {
+        const item = itemByLineIndex.get(request.lineIndex);
+        return {
+          request_kind: request.kind,
+          status: "pending_review",
+          source_app: "origo",
+          source_flow: "receipt",
+          site_id: siteId,
+          supplier_id: supplierId || null,
+          product_id: request.productId,
+          source_entry_id: entry.id,
+          source_entry_item_id: entryItemIdByLineIndex.get(request.lineIndex) ?? null,
+          line_index: request.lineIndex,
+          requested_label: request.requestedLabel,
+          input_unit_code: request.inputUnitCode,
+          input_unit_label: request.inputUnitLabel,
+          conversion_factor_to_stock: request.conversionFactorToStock,
+          stock_unit_code: request.stockUnitCode,
+          unit_cost: item?.net_unit_cost ?? request.unitCost,
+          currency: "COP",
+          notes: request.notes,
+          payload: {
+            ...request.payload,
+            server_site_id: siteId,
+            server_supplier_id: supplierId,
+            server_supplier_name: supplierName,
+            server_source_entry_id: entry.id,
+            server_source_entry_item_id: entryItemIdByLineIndex.get(request.lineIndex) ?? null,
+            receipt_line_snapshot: item ?? null,
+          },
+          created_by: user.id,
+        };
+      });
+
+      const { error: requestInsertErr } = await supabase
+        .from("product_master_review_requests")
+        .insert(requestRows);
+
+      if (requestInsertErr) {
+        redirect(createErrorUrl("La recepción quedó en revisión, pero no se pudieron guardar las solicitudes de maestro de datos: " + requestInsertErr.message));
+      }
+    }
+
+    redirect(buildReceiptsUrl({ siteId, ok: "pending_review" }));
   }
 
   const movementRows = items.map((item) => ({
@@ -1365,33 +1488,39 @@ async function createReceipt(formData: FormData) {
   }
 
   if (masterDataRequests.length > 0) {
-    const requestRows = masterDataRequests.map((request) => ({
-      request_kind: request.kind,
-      status: "pending_review",
-      source_app: "origo",
-      source_flow: "receipt",
-      site_id: siteId,
-      supplier_id: supplierId || null,
-      product_id: request.productId,
-      source_entry_id: entry.id,
-      line_index: request.lineIndex,
-      requested_label: request.requestedLabel,
-      input_unit_code: request.inputUnitCode,
-      input_unit_label: request.inputUnitLabel,
-      conversion_factor_to_stock: request.conversionFactorToStock,
-      stock_unit_code: request.stockUnitCode,
-      unit_cost: request.unitCost,
-      currency: "COP",
-      notes: request.notes,
-      payload: {
-        ...request.payload,
-        server_site_id: siteId,
-        server_supplier_id: supplierId,
-        server_supplier_name: supplierName,
-        server_source_entry_id: entry.id,
-      },
-      created_by: user.id,
-    }));
+    const requestRows = masterDataRequests.map((request) => {
+      const item = itemByLineIndex.get(request.lineIndex);
+      return {
+        request_kind: request.kind,
+        status: "pending_review",
+        source_app: "origo",
+        source_flow: "receipt",
+        site_id: siteId,
+        supplier_id: supplierId || null,
+        product_id: request.productId,
+        source_entry_id: entry.id,
+        source_entry_item_id: entryItemIdByLineIndex.get(request.lineIndex) ?? null,
+        line_index: request.lineIndex,
+        requested_label: request.requestedLabel,
+        input_unit_code: request.inputUnitCode,
+        input_unit_label: request.inputUnitLabel,
+        conversion_factor_to_stock: request.conversionFactorToStock,
+        stock_unit_code: request.stockUnitCode,
+        unit_cost: item?.net_unit_cost ?? request.unitCost,
+        currency: "COP",
+        notes: request.notes,
+        payload: {
+          ...request.payload,
+          server_site_id: siteId,
+          server_supplier_id: supplierId,
+          server_supplier_name: supplierName,
+          server_source_entry_id: entry.id,
+          server_source_entry_item_id: entryItemIdByLineIndex.get(request.lineIndex) ?? null,
+          receipt_line_snapshot: item ?? null,
+        },
+        created_by: user.id,
+      };
+    });
 
     const { error: requestInsertErr } = await supabase
       .from("product_master_review_requests")
