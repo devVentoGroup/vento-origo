@@ -10,11 +10,18 @@ export const dynamic = "force-dynamic";
 const APP_ID = "origo";
 const REVIEW_PERMISSION = "procurement.receipts";
 const REVIEW_PATH = "/product-master-review";
+const NEXO_BASE_URL =
+  process.env.NEXT_PUBLIC_NEXO_URL?.replace(/\/$/, "") ||
+  "https://nexo.ventogroup.co";
+const ORIGO_BASE_URL = process.env.NEXT_PUBLIC_ORIGO_URL?.replace(/\/$/, "") || "";
 
 type SearchParams = {
   status?: string;
   ok?: string;
   error?: string;
+  finalize_entry_id?: string;
+  review_request_id?: string;
+  product_id?: string;
 };
 
 type ReviewStatus = "pending_review" | "approved" | "rejected" | "cancelled";
@@ -257,6 +264,27 @@ function buildErrorRedirect(message: string): never {
   redirect(`${REVIEW_PATH}?error=${encodeURIComponent(message)}`);
 }
 
+function buildReviewReturnTo(sourceEntryId: string | null): string {
+  const search = new URLSearchParams();
+  search.set("status", "pending_review");
+  if (sourceEntryId) search.set("finalize_entry_id", sourceEntryId);
+  const path = `${REVIEW_PATH}?${search.toString()}`;
+  return ORIGO_BASE_URL ? `${ORIGO_BASE_URL}${path}` : path;
+}
+
+function buildNexoCreateProductUrl(request: ReviewRequestRow): string {
+  const url = new URL("/inventory/catalog/new", NEXO_BASE_URL);
+  url.searchParams.set("type", "insumo");
+  url.searchParams.set("source", "origo_receipt_review");
+  url.searchParams.set("review_request_id", request.id);
+  url.searchParams.set("suggested_name", request.requested_label);
+  url.searchParams.set("return_to", buildReviewReturnTo(request.source_entry_id));
+  if (request.source_entry_id) url.searchParams.set("source_entry_id", request.source_entry_id);
+  if (request.supplier_id) url.searchParams.set("supplier_id", request.supplier_id);
+  if (request.stock_unit_code) url.searchParams.set("stock_unit_code", request.stock_unit_code);
+  return url.toString();
+}
+
 async function getActionContext(returnTo = REVIEW_PATH) {
   const supabase = await createClient();
   const { data: userRes } = await supabase.auth.getUser();
@@ -396,6 +424,45 @@ async function applyApprovedPresentationToEntryItem(params: {
   if (error) buildErrorRedirect(error.message);
 }
 
+
+async function applyApprovedProductToEntryItem(params: {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  request: ReviewRequestRow;
+  items: PendingEntryItemRow[];
+}): Promise<boolean> {
+  if (!params.request.approved_product_id) return false;
+
+  const item = findEntryItemForRequest(params.request, params.items);
+  if (!item) return false;
+
+  const { data: product, error: productError } = await params.supabase
+    .from("products")
+    .select("id,unit,stock_unit_code")
+    .eq("id", params.request.approved_product_id)
+    .maybeSingle();
+
+  if (productError) buildErrorRedirect(productError.message);
+  if (!product) return false;
+
+  const productRow = product as { id: string; unit: string | null; stock_unit_code: string | null };
+  const stockUnitCode = String(productRow.stock_unit_code ?? productRow.unit ?? item.stock_unit_code ?? "un")
+    .trim()
+    .toLowerCase() || "un";
+
+  const { error } = await params.supabase
+    .from("inventory_entry_items")
+    .update({
+      product_id: params.request.approved_product_id,
+      stock_unit_code: stockUnitCode,
+      input_unit_code: item.input_unit_code || stockUnitCode,
+      unit: item.unit || item.input_unit_code || stockUnitCode,
+    })
+    .eq("id", item.id);
+
+  if (error) buildErrorRedirect(error.message);
+  return true;
+}
+
 async function updateSupplierProductCostsForReceipt(params: {
   supabase: Awaited<ReturnType<typeof createClient>>;
   supplierId: string | null;
@@ -530,6 +597,15 @@ async function finalizePendingReceiptIfReady(params: {
 
   let items = await fetchPendingEntryItems({ supabase: params.supabase, entryId: entry.id });
   if (!items.length) return "waiting";
+
+  for (const request of requests) {
+    if (request.request_kind === "new_product") {
+      const applied = await applyApprovedProductToEntryItem({ supabase: params.supabase, request, items });
+      if (!applied) return "waiting";
+    }
+  }
+
+  items = await fetchPendingEntryItems({ supabase: params.supabase, entryId: entry.id });
 
   for (const request of requests) {
     if (request.request_kind !== "new_presentation") continue;
@@ -1021,6 +1097,21 @@ export default async function ProductMasterReviewPage({
   const siteId = String(settings?.selected_site_id ?? employee?.site_id ?? "").trim();
   if (!siteId) redirect(`/no-access?reason=no_site&returnTo=${encodeURIComponent(REVIEW_PATH)}`);
 
+  const finalizeEntryId = String(sp.finalize_entry_id ?? "").trim();
+  if (finalizeEntryId) {
+    const finalizeResult = await finalizePendingReceiptIfReady({
+      supabase,
+      userId: user.id,
+      siteId,
+      sourceEntryId: finalizeEntryId,
+    });
+    redirect(
+      `${REVIEW_PATH}?status=pending_review&ok=${encodeURIComponent(
+        finalizeResult === "finalized" ? "product_created_from_nexo_receipt_finalized" : "product_created_from_nexo_waiting"
+      )}`
+    );
+  }
+
   let requestsQuery = supabase
     .from("product_master_review_requests")
     .select(
@@ -1105,17 +1196,21 @@ export default async function ProductMasterReviewPage({
               ? "Presentación aprobada y recepción pendiente materializada."
               : okMsg === "presentation_existing_receipt_finalized"
                 ? "Solicitud aprobada usando una presentación existente y recepción pendiente materializada."
-                : okMsg === "product_request_approved_receipt_finalized"
-                  ? "Solicitud de producto aprobada y recepción pendiente materializada."
-                  : okMsg === "presentation_approved"
-                    ? "Presentación aprobada y creada como manual. La recepción sigue pendiente si quedan solicitudes sin resolver."
-                    : okMsg === "presentation_existing"
-                      ? "Solicitud aprobada usando una presentación existente. La recepción sigue pendiente si quedan solicitudes sin resolver."
-                      : okMsg === "product_request_approved"
-                        ? "Solicitud de producto aprobada para completar en catálogo maestro. La recepción sigue pendiente hasta vincular el producto real."
-                        : okMsg === "request_rejected"
-                          ? "Solicitud rechazada."
-                          : "Acción completada."}
+                : okMsg === "product_created_from_nexo_receipt_finalized"
+                  ? "Producto creado en NEXO, solicitud aprobada y recepción pendiente materializada."
+                  : okMsg === "product_created_from_nexo_waiting"
+                    ? "Producto creado en NEXO y solicitud aprobada. La recepción sigue pendiente si faltan otras solicitudes o datos de línea."
+                    : okMsg === "product_request_approved_receipt_finalized"
+                      ? "Solicitud de producto aprobada y recepción pendiente materializada."
+                      : okMsg === "presentation_approved"
+                        ? "Presentación aprobada y creada como manual. La recepción sigue pendiente si quedan solicitudes sin resolver."
+                        : okMsg === "presentation_existing"
+                          ? "Solicitud aprobada usando una presentación existente. La recepción sigue pendiente si quedan solicitudes sin resolver."
+                          : okMsg === "product_request_approved"
+                            ? "Solicitud de producto aprobada para completar en catálogo maestro. La recepción sigue pendiente hasta vincular el producto real."
+                            : okMsg === "request_rejected"
+                              ? "Solicitud rechazada."
+                              : "Acción completada."}
           </div>
         ) : null}
 
@@ -1254,33 +1349,32 @@ export default async function ProductMasterReviewPage({
 
               {request.status === "pending_review" ? (
                 <div className="mt-5 grid gap-3 lg:grid-cols-[minmax(0,1fr)_260px]">
-                  <form
-                    action={request.request_kind === "new_presentation" ? approvePresentationRequest : approveNewProductRequest}
-                    className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4"
-                  >
-                    <input type="hidden" name="request_id" value={request.id} />
-                    <div className="text-sm font-bold text-emerald-950">
-                      {request.request_kind === "new_presentation"
-                        ? "Aprobar presentación"
-                        : "Aprobar solicitud de nuevo insumo"}
+                  {request.request_kind === "new_product" ? (
+                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                      <div className="text-sm font-bold text-emerald-950">Crear insumo en NEXO</div>
+                      <p className="mt-1 text-xs leading-5 text-emerald-900">
+                        Abre el catálogo maestro de NEXO con esta solicitud precargada. Al guardar el producto, NEXO vuelve aquí y aprueba la solicitud con el producto real vinculado.
+                      </p>
+                      <a href={buildNexoCreateProductUrl(request)} className="ui-btn ui-btn--brand mt-3 inline-flex">
+                        Crear en NEXO
+                      </a>
                     </div>
-                    <p className="mt-1 text-xs leading-5 text-emerald-900">
-                      {request.request_kind === "new_presentation"
-                        ? "Crea una presentación manual en product_uom_profiles para este producto existente."
-                        : "No crea el producto aquí. Marca la solicitud como aprobada para completar la ficha desde el catálogo maestro de NEXO."}
-                    </p>
-                    <label className="mt-3 block">
-                      <span className="ui-label">Nota de revisión</span>
-                      <textarea
-                        name="review_notes"
-                        className="ui-input mt-1 min-h-20 bg-white"
-                        placeholder="Opcional"
-                      />
-                    </label>
-                    <button type="submit" className="ui-btn ui-btn--brand mt-3">
-                      {request.request_kind === "new_presentation" ? "Aprobar y crear presentación" : "Aprobar solicitud"}
-                    </button>
-                  </form>
+                  ) : (
+                    <form action={approvePresentationRequest} className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                      <input type="hidden" name="request_id" value={request.id} />
+                      <div className="text-sm font-bold text-emerald-950">Aprobar presentación</div>
+                      <p className="mt-1 text-xs leading-5 text-emerald-900">
+                        Crea una presentación manual en product_uom_profiles para este producto existente.
+                      </p>
+                      <label className="mt-3 block">
+                        <span className="ui-label">Nota de revisión</span>
+                        <textarea name="review_notes" className="ui-input mt-1 min-h-20 bg-white" placeholder="Opcional" />
+                      </label>
+                      <button type="submit" className="ui-btn ui-btn--brand mt-3">
+                        Aprobar y crear presentación
+                      </button>
+                    </form>
+                  )}
 
                   <form action={rejectReviewRequest} className="rounded-2xl border border-rose-200 bg-rose-50 p-4">
                     <input type="hidden" name="request_id" value={request.id} />
