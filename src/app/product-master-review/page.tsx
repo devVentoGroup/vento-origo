@@ -85,6 +85,67 @@ type ProductUomProfileRow = {
   is_active: boolean | null;
 };
 
+type PendingEntryRow = {
+  id: string;
+  site_id: string;
+  supplier_id: string | null;
+  supplier_name: string | null;
+  status: string | null;
+  purchase_order_id: string | null;
+  received_at: string | null;
+  created_at: string | null;
+};
+
+type PendingEntryItemRow = {
+  id: string;
+  entry_id: string;
+  product_id: string;
+  location_id: string | null;
+  location_position_id: string | null;
+  quantity_declared: number | null;
+  quantity_received: number | null;
+  unit: string | null;
+  input_qty: number | null;
+  input_unit_code: string | null;
+  conversion_factor_to_stock: number | null;
+  stock_unit_code: string | null;
+  input_uom_profile_id: string | null;
+  input_unit_cost: number | null;
+  stock_unit_cost: number | null;
+  line_total_cost: number | null;
+  tax_included: boolean | null;
+  tax_rate: number | null;
+  iva_rate: number | null;
+  iva_amount: number | null;
+  icui_rate: number | null;
+  icui_amount: number | null;
+  total_tax_rate: number | null;
+  cost_input_mode: string | null;
+  net_unit_cost: number | null;
+  gross_unit_cost: number | null;
+  net_total_cost: number | null;
+  gross_total_cost: number | null;
+  tax_amount: number | null;
+  cost_source: string | null;
+  currency: string | null;
+  purchase_order_item_id: string | null;
+  lot_number: string | null;
+  expiry_date: string | null;
+  notes: string | null;
+  created_at: string | null;
+};
+
+type SupplierProductCostRow = {
+  id: string;
+  total_input_qty: number | null;
+  total_stock_qty: number | null;
+  total_net_cost: number | null;
+  total_gross_cost: number | null;
+  samples_count: number | null;
+};
+
+type FinalizePendingReceiptResult = "not_applicable" | "waiting" | "finalized";
+
 function asText(value: FormDataEntryValue | null): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -121,6 +182,32 @@ function normalizeComparable(value: string | null | undefined): string {
 function parsePositiveNumber(value: unknown): number | null {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function roundQuantity(value: number, decimals = 6): number {
+  if (!Number.isFinite(value)) return 0;
+  const scale = 10 ** decimals;
+  return Math.round(value * scale) / scale;
+}
+
+function computeWeightedAverageCost(params: {
+  currentQty: number;
+  currentUnitCost: number;
+  receivedQty: number;
+  receivedUnitCost: number;
+}): number {
+  const safeCurrentQty = Math.max(0, Number(params.currentQty || 0));
+  const safeCurrentCost = Math.max(0, Number(params.currentUnitCost || 0));
+  const safeReceivedQty = Math.max(0, Number(params.receivedQty || 0));
+  const safeReceivedCost = Math.max(0, Number(params.receivedUnitCost || 0));
+
+  if (safeReceivedQty <= 0) return roundQuantity(safeCurrentCost, 6);
+  const denominator = safeCurrentQty + safeReceivedQty;
+  if (denominator <= 0) return roundQuantity(safeReceivedCost, 6);
+  return roundQuantity(
+    (safeCurrentCost * safeCurrentQty + safeReceivedCost * safeReceivedQty) / denominator,
+    6
+  );
 }
 
 function formatDateTimeColombia(value: string | null | undefined): string {
@@ -231,6 +318,450 @@ async function loadReviewRequestOrRedirect(params: {
 
   return row;
 }
+async function fetchPendingEntryItems(params: {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  entryId: string;
+}): Promise<PendingEntryItemRow[]> {
+  const { data, error } = await params.supabase
+    .from("inventory_entry_items")
+    .select(
+      "id,entry_id,product_id,location_id,location_position_id,quantity_declared,quantity_received,unit,input_qty,input_unit_code,conversion_factor_to_stock,stock_unit_code,input_uom_profile_id,input_unit_cost,stock_unit_cost,line_total_cost,tax_included,tax_rate,iva_rate,iva_amount,icui_rate,icui_amount,total_tax_rate,cost_input_mode,net_unit_cost,gross_unit_cost,net_total_cost,gross_total_cost,tax_amount,cost_source,currency,purchase_order_item_id,lot_number,expiry_date,notes,created_at"
+    )
+    .eq("entry_id", params.entryId)
+    .order("created_at", { ascending: true });
+
+  if (error) buildErrorRedirect(error.message);
+  return (data ?? []) as PendingEntryItemRow[];
+}
+
+function findEntryItemForRequest(
+  request: Pick<ReviewRequestRow, "source_entry_item_id" | "line_index">,
+  items: PendingEntryItemRow[]
+): PendingEntryItemRow | null {
+  if (request.source_entry_item_id) {
+    return items.find((item) => item.id === request.source_entry_item_id) ?? null;
+  }
+
+  if (typeof request.line_index === "number" && request.line_index >= 0) {
+    return items[request.line_index] ?? null;
+  }
+
+  return null;
+}
+
+async function applyApprovedPresentationToEntryItem(params: {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  request: ReviewRequestRow;
+  items: PendingEntryItemRow[];
+}) {
+  if (!params.request.approved_presentation_id) return;
+
+  const item = findEntryItemForRequest(params.request, params.items);
+  if (!item) return;
+
+  const factor = parsePositiveNumber(params.request.conversion_factor_to_stock);
+  if (!factor) return;
+
+  const inputQty = Number(item.input_qty ?? 0);
+  const safeInputQty = Number.isFinite(inputQty) && inputQty > 0 ? inputQty : 0;
+  const quantityReceived = roundQuantity(safeInputQty * factor, 6);
+  const netUnitCost = Number(item.net_unit_cost ?? item.input_unit_cost ?? params.request.unit_cost ?? 0);
+  const grossUnitCost = Number(item.gross_unit_cost ?? netUnitCost);
+  const stockUnitCost = netUnitCost > 0 ? roundQuantity(netUnitCost / factor, 6) : Number(item.stock_unit_cost ?? 0);
+  const netTotalCost = Number(item.net_total_cost ?? (safeInputQty > 0 ? safeInputQty * netUnitCost : item.line_total_cost ?? 0));
+  const grossTotalCost = Number(item.gross_total_cost ?? (safeInputQty > 0 ? safeInputQty * grossUnitCost : netTotalCost));
+  const inputUnitLabel = String(params.request.input_unit_label ?? params.request.requested_label ?? item.unit ?? "").trim();
+  const inputUnitCode =
+    String(params.request.input_unit_code ?? item.input_unit_code ?? "").trim().toLowerCase() ||
+    normalizeUnitCode(inputUnitLabel);
+  const stockUnitCode = String(params.request.stock_unit_code ?? item.stock_unit_code ?? "un").trim().toLowerCase() || "un";
+
+  const { error } = await params.supabase
+    .from("inventory_entry_items")
+    .update({
+      input_uom_profile_id: params.request.approved_presentation_id,
+      input_unit_code: inputUnitCode,
+      unit: inputUnitLabel || inputUnitCode,
+      conversion_factor_to_stock: factor,
+      stock_unit_code: stockUnitCode,
+      quantity_declared: quantityReceived,
+      quantity_received: quantityReceived,
+      stock_unit_cost: stockUnitCost,
+      line_total_cost: netTotalCost,
+      net_total_cost: netTotalCost,
+      gross_total_cost: grossTotalCost,
+    })
+    .eq("id", item.id);
+
+  if (error) buildErrorRedirect(error.message);
+}
+
+async function updateSupplierProductCostsForReceipt(params: {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  supplierId: string | null;
+  entry: PendingEntryRow;
+  items: PendingEntryItemRow[];
+}) {
+  if (!params.supplierId) return;
+
+  for (const item of params.items) {
+    const inputUomProfileId = String(item.input_uom_profile_id ?? "").trim();
+    if (!item.product_id || !inputUomProfileId) continue;
+
+    const inputQty = Math.max(0, Number(item.input_qty ?? 0));
+    const stockQty = Math.max(0, Number(item.quantity_received ?? 0));
+    const netTotal = Math.max(0, Number(item.net_total_cost ?? item.line_total_cost ?? 0));
+    const grossTotal = Math.max(0, Number(item.gross_total_cost ?? netTotal));
+    const netUnitCost = Math.max(0, Number(item.net_unit_cost ?? item.input_unit_cost ?? 0));
+    const grossUnitCost = Math.max(0, Number(item.gross_unit_cost ?? netUnitCost));
+    const stockUnitCost = Math.max(0, Number(item.stock_unit_cost ?? 0));
+    const inputUnitCode = String(item.input_unit_code ?? item.stock_unit_code ?? "un").trim().toLowerCase() || "un";
+    const inputUnitLabel = String(item.unit ?? inputUnitCode).trim() || inputUnitCode;
+    const conversionFactorToStock = Math.max(0, Number(item.conversion_factor_to_stock ?? 1)) || 1;
+    const stockUnitCode = String(item.stock_unit_code ?? inputUnitCode).trim().toLowerCase() || inputUnitCode;
+    const currency = String(item.currency ?? "COP").trim() || "COP";
+
+    const { data: existingData, error: existingError } = await params.supabase
+      .from("procurement_supplier_product_costs")
+      .select("id,total_input_qty,total_stock_qty,total_net_cost,total_gross_cost,samples_count")
+      .eq("supplier_id", params.supplierId)
+      .eq("product_id", item.product_id)
+      .eq("input_uom_profile_id", inputUomProfileId)
+      .eq("input_unit_code", inputUnitCode)
+      .eq("conversion_factor_to_stock", conversionFactorToStock)
+      .eq("stock_unit_code", stockUnitCode)
+      .eq("currency", currency)
+      .eq("is_active", true)
+      .maybeSingle();
+
+    if (existingError) buildErrorRedirect(existingError.message);
+
+    const existing = existingData as SupplierProductCostRow | null;
+    const totalInputQty = roundQuantity(Number(existing?.total_input_qty ?? 0) + inputQty, 6);
+    const totalStockQty = roundQuantity(Number(existing?.total_stock_qty ?? 0) + stockQty, 6);
+    const totalNetCost = roundQuantity(Number(existing?.total_net_cost ?? 0) + netTotal, 6);
+    const totalGrossCost = roundQuantity(Number(existing?.total_gross_cost ?? 0) + grossTotal, 6);
+    const avgNetUnitCost = totalInputQty > 0 ? roundQuantity(totalNetCost / totalInputQty, 6) : 0;
+    const avgGrossUnitCost = totalInputQty > 0 ? roundQuantity(totalGrossCost / totalInputQty, 6) : 0;
+    const avgStockUnitCost = totalStockQty > 0 ? roundQuantity(totalNetCost / totalStockQty, 6) : 0;
+    const samplesCount = Number(existing?.samples_count ?? 0) + 1;
+
+    const payload = {
+      supplier_id: params.supplierId,
+      product_id: item.product_id,
+      input_uom_profile_id: inputUomProfileId,
+      input_unit_code: inputUnitCode,
+      input_unit_label: inputUnitLabel,
+      conversion_factor_to_stock: conversionFactorToStock,
+      stock_unit_code: stockUnitCode,
+      currency,
+      last_net_unit_cost: roundQuantity(netUnitCost, 6),
+      last_gross_unit_cost: roundQuantity(grossUnitCost, 6),
+      last_stock_unit_cost: roundQuantity(stockUnitCost, 6),
+      avg_net_unit_cost: avgNetUnitCost,
+      avg_gross_unit_cost: avgGrossUnitCost,
+      avg_stock_unit_cost: avgStockUnitCost,
+      total_input_qty: totalInputQty,
+      total_stock_qty: totalStockQty,
+      total_net_cost: totalNetCost,
+      total_gross_cost: totalGrossCost,
+      samples_count: samplesCount,
+      last_entry_id: params.entry.id,
+      last_entry_item_id: item.id,
+      last_received_at: params.entry.received_at ?? params.entry.created_at ?? new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      is_active: true,
+    };
+
+    if (existing?.id) {
+      const { error: updateError } = await params.supabase
+        .from("procurement_supplier_product_costs")
+        .update(payload)
+        .eq("id", existing.id);
+      if (updateError) buildErrorRedirect(updateError.message);
+    } else {
+      const { error: insertError } = await params.supabase
+        .from("procurement_supplier_product_costs")
+        .insert(payload);
+      if (insertError) buildErrorRedirect(insertError.message);
+    }
+  }
+}
+
+async function finalizePendingReceiptIfReady(params: {
+  supabase: Awaited<ReturnType<typeof createClient>>;
+  userId: string;
+  siteId: string;
+  sourceEntryId: string | null;
+}): Promise<FinalizePendingReceiptResult> {
+  if (!params.sourceEntryId) return "not_applicable";
+
+  const { data: entryData, error: entryError } = await params.supabase
+    .from("inventory_entries")
+    .select("id,site_id,supplier_id,supplier_name,status,purchase_order_id,received_at,created_at")
+    .eq("id", params.sourceEntryId)
+    .maybeSingle();
+
+  if (entryError) buildErrorRedirect(entryError.message);
+  if (!entryData) return "not_applicable";
+
+  const entry = entryData as PendingEntryRow;
+  if (entry.site_id !== params.siteId) buildErrorRedirect("La recepción pendiente no pertenece a tu sede activa.");
+  if (entry.status !== "pending_review") return "not_applicable";
+
+  const { data: requestData, error: requestError } = await params.supabase
+    .from("product_master_review_requests")
+    .select(
+      "id,request_kind,status,source_app,source_flow,site_id,supplier_id,product_id,source_entry_id,source_entry_item_id,line_index,requested_label,input_unit_code,input_unit_label,conversion_factor_to_stock,stock_unit_code,unit_cost,currency,notes,payload,created_by,created_at,reviewed_by,reviewed_at,review_notes,approved_product_id,approved_presentation_id"
+    )
+    .eq("source_entry_id", entry.id)
+    .eq("source_app", "origo")
+    .eq("source_flow", "receipt");
+
+  if (requestError) buildErrorRedirect(requestError.message);
+
+  const requests = (requestData ?? []) as ReviewRequestRow[];
+  if (!requests.length) return "not_applicable";
+
+  if (requests.some((request) => request.status === "pending_review")) return "waiting";
+  if (requests.some((request) => request.status !== "approved")) return "waiting";
+  if (requests.some((request) => request.request_kind === "new_presentation" && !request.approved_presentation_id)) return "waiting";
+  if (requests.some((request) => request.request_kind === "new_product" && !request.approved_product_id)) return "waiting";
+
+  let items = await fetchPendingEntryItems({ supabase: params.supabase, entryId: entry.id });
+  if (!items.length) return "waiting";
+
+  for (const request of requests) {
+    if (request.request_kind !== "new_presentation") continue;
+    await applyApprovedPresentationToEntryItem({ supabase: params.supabase, request, items });
+  }
+
+  items = await fetchPendingEntryItems({ supabase: params.supabase, entryId: entry.id });
+
+  const incompleteItem = items.some((item) => {
+    const qty = Number(item.quantity_received ?? 0);
+    return !item.product_id || !item.location_id || !Number.isFinite(qty) || qty <= 0 || !item.input_uom_profile_id;
+  });
+  if (incompleteItem) return "waiting";
+
+  const movementRows = items.map((item) => ({
+    site_id: entry.site_id,
+    product_id: item.product_id,
+    location_id: item.location_id,
+    location_position_id: item.location_position_id,
+    movement_type: "receipt_in",
+    quantity: item.quantity_received,
+    input_qty: item.input_qty,
+    input_unit_code: item.input_unit_code,
+    conversion_factor_to_stock: item.conversion_factor_to_stock,
+    stock_unit_code: item.stock_unit_code,
+    input_uom_profile_id: item.input_uom_profile_id,
+    stock_unit_cost: item.stock_unit_cost,
+    line_total_cost: item.line_total_cost,
+    related_purchase_order_id: entry.purchase_order_id,
+    note: `Recepcion ORIGO ${entry.id}`,
+  }));
+
+  const { error: movementError } = await params.supabase.from("inventory_movements").insert(movementRows);
+  if (movementError) buildErrorRedirect(movementError.message);
+
+  const productIdsWithReceipt = Array.from(new Set(items.map((item) => item.product_id).filter(Boolean)));
+  const { data: globalStockRows } = await params.supabase
+    .from("inventory_stock_by_site")
+    .select("product_id,current_qty")
+    .in("product_id", productIdsWithReceipt);
+  const globalQtyBeforeMap = new Map<string, number>();
+  for (const row of (globalStockRows ?? []) as Array<{ product_id: string; current_qty: number | null }>) {
+    const previous = globalQtyBeforeMap.get(row.product_id) ?? 0;
+    globalQtyBeforeMap.set(row.product_id, previous + Number(row.current_qty ?? 0));
+  }
+
+  const { data: existingSiteStocks } = await params.supabase
+    .from("inventory_stock_by_site")
+    .select("product_id,current_qty")
+    .eq("site_id", entry.site_id)
+    .in("product_id", productIdsWithReceipt);
+  const siteQtyMap = new Map(
+    ((existingSiteStocks ?? []) as Array<{ product_id: string; current_qty: number | null }>).map((row) => [
+      row.product_id,
+      Number(row.current_qty ?? 0),
+    ])
+  );
+
+  for (const item of items) {
+    const currentQty = siteQtyMap.get(item.product_id) ?? 0;
+    const nextQty = roundQuantity(currentQty + Number(item.quantity_received ?? 0));
+    siteQtyMap.set(item.product_id, nextQty);
+    const { error: stockError } = await params.supabase
+      .from("inventory_stock_by_site")
+      .upsert(
+        {
+          site_id: entry.site_id,
+          product_id: item.product_id,
+          current_qty: nextQty,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "site_id,product_id" }
+      );
+    if (stockError) buildErrorRedirect(stockError.message);
+  }
+
+  for (const item of items) {
+    const { error: locationError } = await params.supabase.rpc("upsert_inventory_stock_by_location", {
+      p_location_id: item.location_id,
+      p_product_id: item.product_id,
+      p_delta: item.quantity_received,
+    });
+    if (locationError) buildErrorRedirect(locationError.message);
+  }
+
+  const { data: profileRowsData } = await params.supabase
+    .from("product_inventory_profiles")
+    .select("product_id,track_inventory,costing_mode")
+    .in("product_id", productIdsWithReceipt);
+  const profileMap = new Map(
+    ((profileRowsData ?? []) as Array<{ product_id: string; track_inventory: boolean | null; costing_mode: string | null }>).map((row) => [
+      row.product_id,
+      row,
+    ])
+  );
+
+  const { data: productRowsData } = await params.supabase
+    .from("products")
+    .select("id,cost")
+    .in("id", productIdsWithReceipt);
+  const productCostMap = new Map(
+    ((productRowsData ?? []) as Array<{ id: string; cost: number | null }>).map((row) => [row.id, Number(row.cost ?? 0)])
+  );
+
+  const { data: policyRow } = await params.supabase
+    .from("inventory_cost_policies")
+    .select("cost_basis,is_active")
+    .eq("site_id", entry.site_id)
+    .maybeSingle();
+  const basis =
+    policyRow && policyRow.is_active === false
+      ? "net"
+      : (String(policyRow?.cost_basis ?? "net") as "net" | "gross");
+
+  const receiptByProduct = new Map<string, { qtyIn: number; lineCostTotal: number; applyAutoCost: boolean }>();
+  for (const item of items) {
+    const profile = profileMap.get(item.product_id);
+    const previous = receiptByProduct.get(item.product_id) ?? {
+      qtyIn: 0,
+      lineCostTotal: 0,
+      applyAutoCost: false,
+    };
+    receiptByProduct.set(item.product_id, {
+      qtyIn: previous.qtyIn + Number(item.quantity_received ?? 0),
+      lineCostTotal: previous.lineCostTotal + Number(item.line_total_cost ?? item.net_total_cost ?? 0),
+      applyAutoCost:
+        previous.applyAutoCost || (Boolean(profile?.track_inventory) && profile?.costing_mode === "auto_primary_supplier"),
+    });
+  }
+
+  for (const [productId, receipt] of receiptByProduct.entries()) {
+    if (!receipt.applyAutoCost || receipt.qtyIn <= 0) continue;
+
+    const costBefore = Number(productCostMap.get(productId) ?? 0);
+    const qtyBefore = Number(globalQtyBeforeMap.get(productId) ?? 0);
+    const costIn = receipt.qtyIn > 0 ? receipt.lineCostTotal / receipt.qtyIn : 0;
+    const costAfter = computeWeightedAverageCost({
+      currentQty: qtyBefore,
+      currentUnitCost: costBefore,
+      receivedQty: receipt.qtyIn,
+      receivedUnitCost: costIn,
+    });
+
+    const { error: productCostError } = await params.supabase
+      .from("products")
+      .update({ cost: costAfter, updated_at: new Date().toISOString() })
+      .eq("id", productId);
+    if (productCostError) buildErrorRedirect(productCostError.message);
+
+    const { error: costEventError } = await params.supabase.from("product_cost_events").insert({
+      product_id: productId,
+      site_id: entry.site_id,
+      source: "entry",
+      source_entry_id: entry.id,
+      qty_before: qtyBefore,
+      qty_in: receipt.qtyIn,
+      cost_before: costBefore,
+      cost_in: costIn,
+      cost_after: costAfter,
+      basis,
+      created_by: params.userId,
+    });
+    if (costEventError) buildErrorRedirect(costEventError.message);
+  }
+
+  await updateSupplierProductCostsForReceipt({
+    supabase: params.supabase,
+    supplierId: entry.supplier_id,
+    entry,
+    items,
+  });
+
+  if (entry.purchase_order_id) {
+    const receivedByPoItem = new Map<string, number>();
+    for (const item of items) {
+      if (!item.purchase_order_item_id) continue;
+      const previous = receivedByPoItem.get(item.purchase_order_item_id) ?? 0;
+      receivedByPoItem.set(item.purchase_order_item_id, previous + Number(item.input_qty ?? 0));
+    }
+
+    for (const [poItemId, qtyReceived] of receivedByPoItem.entries()) {
+      const { data: poItem, error: poItemError } = await params.supabase
+        .from("purchase_order_items")
+        .select("quantity_received")
+        .eq("id", poItemId)
+        .maybeSingle();
+      if (poItemError) buildErrorRedirect(poItemError.message);
+
+      const currentReceived = Number(poItem?.quantity_received ?? 0);
+      const nextReceived = roundQuantity(currentReceived + qtyReceived, 6);
+      const { error: poItemUpdateError } = await params.supabase
+        .from("purchase_order_items")
+        .update({ quantity_received: nextReceived })
+        .eq("id", poItemId);
+      if (poItemUpdateError) buildErrorRedirect(poItemUpdateError.message);
+    }
+
+    const { data: poAllItems, error: poItemsError } = await params.supabase
+      .from("purchase_order_items")
+      .select("quantity_ordered,quantity_received")
+      .eq("purchase_order_id", entry.purchase_order_id);
+    if (poItemsError) buildErrorRedirect(poItemsError.message);
+
+    const allPurchaseOrderItems = (poAllItems ?? []) as Array<{
+      quantity_ordered: number | null;
+      quantity_received: number | null;
+    }>;
+    const allReceived = allPurchaseOrderItems.every((row) => {
+      const ordered = Number(row.quantity_ordered ?? 0);
+      const received = Number(row.quantity_received ?? 0);
+      return ordered > 0 && received >= ordered;
+    });
+
+    if (allReceived && allPurchaseOrderItems.length > 0) {
+      const { error: poStatusError } = await params.supabase
+        .from("purchase_orders")
+        .update({ status: "received", received_at: new Date().toISOString() })
+        .eq("id", entry.purchase_order_id);
+      if (poStatusError) buildErrorRedirect(poStatusError.message);
+    }
+  }
+
+  const { error: entryStatusError } = await params.supabase
+    .from("inventory_entries")
+    .update({ status: "received", updated_at: new Date().toISOString() })
+    .eq("id", entry.id)
+    .eq("status", "pending_review");
+
+  if (entryStatusError) buildErrorRedirect(entryStatusError.message);
+
+  return "finalized";
+}
 
 export async function approvePresentationRequest(formData: FormData) {
   "use server";
@@ -300,8 +831,20 @@ export async function approvePresentationRequest(formData: FormData) {
       .eq("id", request.id);
 
     if (updateDuplicateError) buildErrorRedirect(updateDuplicateError.message);
+
+    const finalizeResult = await finalizePendingReceiptIfReady({
+      supabase,
+      userId: user.id,
+      siteId,
+      sourceEntryId: request.source_entry_id,
+    });
+
     revalidatePath(REVIEW_PATH);
-    redirect(`${REVIEW_PATH}?ok=${encodeURIComponent("presentation_existing")}`);
+    redirect(
+      `${REVIEW_PATH}?ok=${encodeURIComponent(
+        finalizeResult === "finalized" ? "presentation_existing_receipt_finalized" : "presentation_existing"
+      )}`
+    );
   }
 
   const { data: presentation, error: insertError } = await supabase
@@ -335,8 +878,19 @@ export async function approvePresentationRequest(formData: FormData) {
 
   if (updateError) buildErrorRedirect(updateError.message);
 
+  const finalizeResult = await finalizePendingReceiptIfReady({
+    supabase,
+    userId: user.id,
+    siteId,
+    sourceEntryId: request.source_entry_id,
+  });
+
   revalidatePath(REVIEW_PATH);
-  redirect(`${REVIEW_PATH}?ok=${encodeURIComponent("presentation_approved")}`);
+  redirect(
+    `${REVIEW_PATH}?ok=${encodeURIComponent(
+      finalizeResult === "finalized" ? "presentation_approved_receipt_finalized" : "presentation_approved"
+    )}`
+  );
 }
 
 export async function approveNewProductRequest(formData: FormData) {
@@ -367,8 +921,19 @@ export async function approveNewProductRequest(formData: FormData) {
 
   if (error) buildErrorRedirect(error.message);
 
+  const finalizeResult = await finalizePendingReceiptIfReady({
+    supabase,
+    userId: user.id,
+    siteId,
+    sourceEntryId: request.source_entry_id,
+  });
+
   revalidatePath(REVIEW_PATH);
-  redirect(`${REVIEW_PATH}?ok=${encodeURIComponent("product_request_approved")}`);
+  redirect(
+    `${REVIEW_PATH}?ok=${encodeURIComponent(
+      finalizeResult === "finalized" ? "product_request_approved_receipt_finalized" : "product_request_approved"
+    )}`
+  );
 }
 
 export async function rejectReviewRequest(formData: FormData) {
@@ -536,15 +1101,21 @@ export default async function ProductMasterReviewPage({
         {errorMsg ? <div className="ui-alert ui-alert--danger">{errorMsg}</div> : null}
         {okMsg ? (
           <div className="ui-alert ui-alert--success">
-            {okMsg === "presentation_approved"
-              ? "Presentación aprobada y creada como manual."
-              : okMsg === "presentation_existing"
-                ? "Solicitud aprobada usando una presentación existente."
-                : okMsg === "product_request_approved"
-                  ? "Solicitud de producto aprobada para completar en catálogo maestro."
-                  : okMsg === "request_rejected"
-                    ? "Solicitud rechazada."
-                    : "Acción completada."}
+            {okMsg === "presentation_approved_receipt_finalized"
+              ? "Presentación aprobada y recepción pendiente materializada."
+              : okMsg === "presentation_existing_receipt_finalized"
+                ? "Solicitud aprobada usando una presentación existente y recepción pendiente materializada."
+                : okMsg === "product_request_approved_receipt_finalized"
+                  ? "Solicitud de producto aprobada y recepción pendiente materializada."
+                  : okMsg === "presentation_approved"
+                    ? "Presentación aprobada y creada como manual. La recepción sigue pendiente si quedan solicitudes sin resolver."
+                    : okMsg === "presentation_existing"
+                      ? "Solicitud aprobada usando una presentación existente. La recepción sigue pendiente si quedan solicitudes sin resolver."
+                      : okMsg === "product_request_approved"
+                        ? "Solicitud de producto aprobada para completar en catálogo maestro. La recepción sigue pendiente hasta vincular el producto real."
+                        : okMsg === "request_rejected"
+                          ? "Solicitud rechazada."
+                          : "Acción completada."}
           </div>
         ) : null}
 
