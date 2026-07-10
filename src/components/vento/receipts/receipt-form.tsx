@@ -166,6 +166,7 @@ type Props = {
   serverErrorMessage?: string;
   submitSuccess?: boolean;
   correctionEntryId?: string;
+  requiresSharedDeviceActorSignature?: boolean;
 };
 
 const DIRECT_RECEIPT_REASON = "Recepción directa sin orden de compra.";
@@ -587,6 +588,7 @@ export function ReceiptForm({
   serverErrorMessage = "",
   submitSuccess = false,
   correctionEntryId = "",
+  requiresSharedDeviceActorSignature = false,
 }: Props) {
   const router = useRouter();
   const pathname = usePathname();
@@ -2046,6 +2048,24 @@ export function ReceiptForm({
             {serverErrorMessage || clientSubmitError ? (
               <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
                 {serverErrorMessage || clientSubmitError}
+              </div>
+            ) : null}
+
+            {requiresSharedDeviceActorSignature ? (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-amber-900">Firma del trabajador</div>
+                <p className="mt-1 text-xs leading-5 text-amber-900">
+                  Ingresa el PIN del trabajador que registra esta recepción desde la terminal compartida.
+                </p>
+                <input
+                  id="shared_actor_pin"
+                  name="shared_actor_pin"
+                  type="password"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  className="ui-input mt-3 bg-white"
+                  required
+                />
               </div>
             ) : null}
 

@@ -2,7 +2,12 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { ReceiptForm } from "@/components/vento/receipts/receipt-form";
+import {
+  attachSharedDeviceActionSignatureTarget,
+  requireSharedDeviceActorSignature,
+} from "@/lib/auth/shared-device-signature";
 import { requireAppAccess } from "@/lib/auth/guard";
+import { checkOperationalSessionPermission, resolveOperationalSession } from "@/lib/auth/operational-session";
 import { formatPurchaseOrderRef } from "@/lib/purchase-orders/reference";
 import { createClient } from "@/lib/supabase/server";
 
@@ -616,12 +621,27 @@ async function createReceipt(formData: FormData) {
     redirect(buildNewReceiptUrl({ error: "No tienes sede activa." }));
   }
 
-  const { data: canReceive, error: permErr } = await supabase.rpc("has_permission", {
-    p_permission_code: "origo.procurement.receipts",
-    p_site_id: siteId,
-    p_area_id: null,
+  const operationalSession = await resolveOperationalSession({
+    supabase,
+    userId: user.id,
+    appId: APP_ID,
+    preferredSiteId: siteId,
   });
-  if (permErr || !canReceive) {
+
+  const canReceive = operationalSession.isSharedDevice
+    ? await checkOperationalSessionPermission({
+        supabase,
+        session: operationalSession,
+        appId: APP_ID,
+        code: RECEIPTS_PERMISSION,
+      })
+    : await supabase.rpc("has_permission", {
+        p_permission_code: "origo.procurement.receipts",
+        p_site_id: siteId,
+        p_area_id: null,
+      }).then((res) => !res.error && Boolean(res.data));
+
+  if (!canReceive) {
     redirect(buildNewReceiptUrl({ siteId, error: "No tienes permiso para registrar recepciones." }));
   }
 
@@ -633,6 +653,7 @@ async function createReceipt(formData: FormData) {
   const emergencyReason = asText(formData.get("emergency_reason"));
   const correctionEntryId = asText(formData.get("correction_entry_id")) || null;
   const correctionComment = asText(formData.get("correction_comment"));
+  const sharedActorPin = asText(formData.get("shared_actor_pin"));
 
   const createErrorUrl = (message: string) =>
     buildNewReceiptUrl({
@@ -1152,6 +1173,28 @@ async function createReceipt(formData: FormData) {
     }
   }
 
+  const signatureResult = await requireSharedDeviceActorSignature({
+    supabase,
+    session: operationalSession,
+    actorPin: sharedActorPin,
+    appId: APP_ID,
+    actionCode: RECEIPTS_PERMISSION,
+    targetTable: "inventory_entries",
+    metadata: {
+      site_id: siteId,
+      supplier_id: supplierId,
+      purchase_order_id: purchaseOrderId,
+      correction_entry_id: correctionEntryId,
+      entry_mode: entryMode,
+      item_count: items.length,
+      pending_master_data_review: hasPendingMasterDataReview,
+    },
+  });
+
+  if (!signatureResult.ok) {
+    redirect(createErrorUrl(signatureResult.message));
+  }
+
   const status = hasPendingMasterDataReview ? "pending_review" : "received";
   let entryInsert = await supabase
     .from("inventory_entries")
@@ -1163,7 +1206,7 @@ async function createReceipt(formData: FormData) {
       received_at: receivedAt || null,
       status,
       notes: notes || null,
-      created_by: user.id,
+      created_by: signatureResult.required ? signatureResult.actorEmployeeId : user.id,
       purchase_order_id: purchaseOrderId,
       source_app: "origo",
       entry_mode: entryMode,
@@ -1186,7 +1229,7 @@ async function createReceipt(formData: FormData) {
           entryMode === "emergency"
             ? [notes, `Emergencia: ${emergencyReason}`].filter(Boolean).join(" | ")
             : notes || null,
-        created_by: user.id,
+        created_by: signatureResult.required ? signatureResult.actorEmployeeId : user.id,
         purchase_order_id: purchaseOrderId,
       })
       .select("id")
@@ -1196,6 +1239,24 @@ async function createReceipt(formData: FormData) {
   const { data: entry, error: entryErr } = entryInsert;
   if (entryErr || !entry) {
     redirect(createErrorUrl(entryErr?.message ?? "No se pudo crear la recepcion."));
+  }
+
+  if (signatureResult.required) {
+    const attachSignatureResult = await attachSharedDeviceActionSignatureTarget({
+      supabase,
+      signatureId: signatureResult.signatureId,
+      targetTable: "inventory_entries",
+      targetId: entry.id,
+      metadata: { attached_after_insert: true },
+    });
+
+    if (!attachSignatureResult.ok) {
+      console.error("shared device receipt signature target attach failed", {
+        entry_id: entry.id,
+        signature_id: signatureResult.signatureId,
+        message: attachSignatureResult.message,
+      });
+    }
   }
 
   const entryItemRows = items.map((item) => ({
@@ -1282,7 +1343,7 @@ async function createReceipt(formData: FormData) {
             server_source_entry_item_id: entryItemIdByLineIndex.get(request.lineIndex) ?? null,
             receipt_line_snapshot: item ?? null,
           },
-          created_by: user.id,
+          created_by: signatureResult.required ? signatureResult.actorEmployeeId : user.id,
         };
       });
 
@@ -1427,7 +1488,7 @@ async function createReceipt(formData: FormData) {
       cost_in: costIn,
       cost_after: costAfter,
       basis,
-      created_by: user.id,
+      created_by: signatureResult.required ? signatureResult.actorEmployeeId : user.id,
     });
     if (costEventErr) {
       redirect(createErrorUrl(costEventErr.message));
@@ -1518,7 +1579,7 @@ async function createReceipt(formData: FormData) {
           server_source_entry_item_id: entryItemIdByLineIndex.get(request.lineIndex) ?? null,
           receipt_line_snapshot: item ?? null,
         },
-        created_by: user.id,
+        created_by: signatureResult.required ? signatureResult.actorEmployeeId : user.id,
       };
     });
 
