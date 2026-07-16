@@ -41,6 +41,7 @@ type SearchParams = {
   purchase_order_id?: string;
   site_id?: string;
   correction_entry_id?: string;
+  draft_id?: string;
 };
 
 type ProductRow = {
@@ -480,12 +481,14 @@ function buildNewReceiptUrl(params: {
   siteId?: string;
   purchaseOrderId?: string;
   correctionEntryId?: string;
+  draftId?: string;
   error?: string;
 }) {
   const search = new URLSearchParams();
   if (params.siteId) search.set("site_id", params.siteId);
   if (params.purchaseOrderId) search.set("purchase_order_id", params.purchaseOrderId);
   if (params.correctionEntryId) search.set("correction_entry_id", params.correctionEntryId);
+  if (params.draftId) search.set("draft_id", params.draftId);
   if (params.error) search.set("error", params.error);
   const qs = search.toString();
   return qs ? `/receipts/new?${qs}` : "/receipts/new";
@@ -501,6 +504,8 @@ function formatEntryStatus(status: string | null) {
       return "Corregida";
     case "pending_review":
       return "En revisión";
+    case "recorded":
+      return "Compra registrada";
     case "draft":
       return "Borrador";
     case "cancelled":
@@ -617,8 +622,10 @@ async function createReceipt(formData: FormData) {
   }
 
   const siteId = asText(formData.get("site_id"));
+  const draftId = asText(formData.get("draft_id"));
+  const requestedOperationMode = asText(formData.get("receipt_operation_mode"));
   if (!siteId) {
-    redirect(buildNewReceiptUrl({ error: "No tienes sede activa." }));
+    redirect(buildNewReceiptUrl({ draftId: draftId || undefined, error: "No tienes sede activa." }));
   }
 
   const operationalSession = await resolveOperationalSession({
@@ -642,7 +649,7 @@ async function createReceipt(formData: FormData) {
       }).then((res) => !res.error && Boolean(res.data));
 
   if (!canReceive) {
-    redirect(buildNewReceiptUrl({ siteId, error: "No tienes permiso para registrar recepciones." }));
+    redirect(buildNewReceiptUrl({ siteId, draftId: draftId || undefined, error: "No tienes permiso para registrar recepciones." }));
   }
 
   const supplierId = asText(formData.get("supplier_id"));
@@ -654,12 +661,16 @@ async function createReceipt(formData: FormData) {
   const correctionEntryId = asText(formData.get("correction_entry_id")) || null;
   const correctionComment = asText(formData.get("correction_comment"));
   const sharedActorPin = asText(formData.get("shared_actor_pin"));
+  const receiptOperationMode =
+    correctionEntryId || requestedOperationMode !== "record_only" ? "inventory" : "record_only";
+  const movesInventory = receiptOperationMode === "inventory";
 
   const createErrorUrl = (message: string) =>
     buildNewReceiptUrl({
       siteId,
       purchaseOrderId: purchaseOrderId ?? undefined,
       correctionEntryId: correctionEntryId ?? undefined,
+      draftId: draftId || undefined,
       error: message,
     });
 
@@ -687,6 +698,10 @@ async function createReceipt(formData: FormData) {
     normalizeMasterDataRequestPayloads(formData);
   if (masterDataRequestError) {
     redirect(createErrorUrl(masterDataRequestError));
+  }
+
+  if (!movesInventory && masterDataRequests.length > 0) {
+    redirect(createErrorUrl("El modo solo registro requiere productos y presentaciones ya aprobados."));
   }
 
   if (masterDataRequests.length > 0) {
@@ -1006,10 +1021,10 @@ async function createReceipt(formData: FormData) {
       const lotNumber = lotNumbers[index] || null;
       const expiryDate = expiryDates[index] || null;
 
-      if (profile?.lot_tracking && !lotNumber) {
+      if (movesInventory && profile?.lot_tracking && !lotNumber) {
         redirect(createErrorUrl("Hay items que requieren lote."));
       }
-      if (profile?.expiry_tracking && !expiryDate) {
+      if (movesInventory && profile?.expiry_tracking && !expiryDate) {
         redirect(createErrorUrl("Hay items que requieren fecha de vencimiento."));
       }
 
@@ -1066,66 +1081,68 @@ async function createReceipt(formData: FormData) {
     redirect(createErrorUrl("No se puede corregir una recepción usando presentaciones nuevas pendientes. Aprueba la presentación primero y luego corrige."));
   }
 
-  if (items.some((item) => !item.location_id)) {
-    redirect(createErrorUrl("Selecciona una LOC para cada item."));
-  }
-
-  const selectedLocationIds = Array.from(new Set(items.map((item) => item.location_id).filter(Boolean)));
-  const { data: selectedLocationRowsData, error: selectedLocationRowsErr } =
-    selectedLocationIds.length > 0
-      ? await supabase
-        .from("inventory_locations")
-        .select("id")
-        .eq("site_id", siteId)
-        .eq("is_active", true)
-        .in("id", selectedLocationIds)
-      : { data: [] as Array<{ id: string }>, error: null };
-
-  if (selectedLocationRowsErr) {
-    redirect(createErrorUrl(selectedLocationRowsErr.message));
-  }
-
-  const validLocationIds = new Set(
-    ((selectedLocationRowsData ?? []) as Array<{ id: string }>).map((row) => row.id)
-  );
-
-  if (items.some((item) => !validLocationIds.has(item.location_id))) {
-    redirect(createErrorUrl("Hay un LOC no valido para esta sede."));
-  }
-
-  const selectedLocationPositionIds = Array.from(
-    new Set(
-      items
-        .map((item) => item.location_position_id)
-        .filter((id): id is string => Boolean(id))
-    )
-  );
-
-  if (selectedLocationPositionIds.length > 0) {
-    const { data: positionRowsData, error: positionRowsErr } = await supabase
-      .from("inventory_location_positions")
-      .select("id,location_id")
-      .in("id", selectedLocationPositionIds)
-      .eq("is_active", true);
-
-    if (positionRowsErr) {
-      redirect(createErrorUrl(positionRowsErr.message));
+  if (movesInventory) {
+    if (items.some((item) => !item.location_id)) {
+      redirect(createErrorUrl("Selecciona una LOC para cada item."));
     }
 
-    const positionLocationMap = new Map(
-      ((positionRowsData ?? []) as Array<{ id: string; location_id: string }>).map((row) => [
-        row.id,
-        row.location_id,
-      ])
+    const selectedLocationIds = Array.from(new Set(items.map((item) => item.location_id).filter(Boolean)));
+    const { data: selectedLocationRowsData, error: selectedLocationRowsErr } =
+      selectedLocationIds.length > 0
+        ? await supabase
+          .from("inventory_locations")
+          .select("id")
+          .eq("site_id", siteId)
+          .eq("is_active", true)
+          .in("id", selectedLocationIds)
+        : { data: [] as Array<{ id: string }>, error: null };
+
+    if (selectedLocationRowsErr) {
+      redirect(createErrorUrl(selectedLocationRowsErr.message));
+    }
+
+    const validLocationIds = new Set(
+      ((selectedLocationRowsData ?? []) as Array<{ id: string }>).map((row) => row.id)
     );
 
-    const hasInvalidLocationPosition = items.some((item) => {
-      if (!item.location_position_id) return false;
-      return positionLocationMap.get(item.location_position_id) !== item.location_id;
-    });
+    if (items.some((item) => !validLocationIds.has(item.location_id))) {
+      redirect(createErrorUrl("Hay un LOC no valido para esta sede."));
+    }
 
-    if (hasInvalidLocationPosition) {
-      redirect(createErrorUrl("Hay una ubicación interna que no pertenece al LOC seleccionado."));
+    const selectedLocationPositionIds = Array.from(
+      new Set(
+        items
+          .map((item) => item.location_position_id)
+          .filter((id): id is string => Boolean(id))
+      )
+    );
+
+    if (selectedLocationPositionIds.length > 0) {
+      const { data: positionRowsData, error: positionRowsErr } = await supabase
+        .from("inventory_location_positions")
+        .select("id,location_id")
+        .in("id", selectedLocationPositionIds)
+        .eq("is_active", true);
+
+      if (positionRowsErr) {
+        redirect(createErrorUrl(positionRowsErr.message));
+      }
+
+      const positionLocationMap = new Map(
+        ((positionRowsData ?? []) as Array<{ id: string; location_id: string }>).map((row) => [
+          row.id,
+          row.location_id,
+        ])
+      );
+
+      const hasInvalidLocationPosition = items.some((item) => {
+        if (!item.location_position_id) return false;
+        return positionLocationMap.get(item.location_position_id) !== item.location_id;
+      });
+
+      if (hasInvalidLocationPosition) {
+        redirect(createErrorUrl("Hay una ubicación interna que no pertenece al LOC seleccionado."));
+      }
     }
   }
 
@@ -1186,6 +1203,7 @@ async function createReceipt(formData: FormData) {
       purchase_order_id: purchaseOrderId,
       correction_entry_id: correctionEntryId,
       entry_mode: entryMode,
+      receipt_operation_mode: receiptOperationMode,
       item_count: items.length,
       pending_master_data_review: hasPendingMasterDataReview,
     },
@@ -1195,7 +1213,11 @@ async function createReceipt(formData: FormData) {
     redirect(createErrorUrl(signatureResult.message));
   }
 
-  const status = hasPendingMasterDataReview ? "pending_review" : "received";
+  const status = hasPendingMasterDataReview
+    ? "pending_review"
+    : movesInventory
+      ? "received"
+      : "recorded";
   let entryInsert = await supabase
     .from("inventory_entries")
     .insert({
@@ -1262,8 +1284,8 @@ async function createReceipt(formData: FormData) {
   const entryItemRows = items.map((item) => ({
     entry_id: entry.id,
     product_id: item.product_id,
-    location_id: item.location_id,
-    location_position_id: item.location_position_id,
+    location_id: movesInventory ? item.location_id : null,
+    location_position_id: movesInventory ? item.location_position_id : null,
     quantity_declared: item.quantity_declared,
     quantity_received: item.quantity_received,
     unit: item.input_unit_label || item.input_unit_code,
@@ -1291,8 +1313,8 @@ async function createReceipt(formData: FormData) {
     cost_source: item.cost_source,
     currency: "COP",
     purchase_order_item_id: item.purchase_order_item_id,
-    lot_number: item.lot_number,
-    expiry_date: item.expiry_date,
+    lot_number: movesInventory ? item.lot_number : null,
+    expiry_date: movesInventory ? item.expiry_date : null,
     notes: item.notes,
   }));
   const { data: insertedEntryItems, error: entryItemsErr } = await supabase
@@ -1310,6 +1332,10 @@ async function createReceipt(formData: FormData) {
   });
 
   const itemByLineIndex = new Map(items.map((item) => [item.line_index, item]));
+
+  if (!movesInventory) {
+    redirect(buildReceiptsUrl({ siteId, ok: "recorded" }));
+  }
 
   if (hasPendingMasterDataReview) {
     if (masterDataRequests.length > 0) {
@@ -1655,6 +1681,7 @@ export default async function ReceiptsPage({
   const errorMsg = safeDecode(sp.error);
   const okMsg = safeDecode(sp.ok);
   const correctionEntryId = String(sp.correction_entry_id ?? "").trim();
+  const draftId = String(sp.draft_id ?? "").trim();
 
   const { supabase, user } = await requireAppAccess({
     appId: APP_ID,
@@ -1706,7 +1733,7 @@ export default async function ReceiptsPage({
   ]);
 
   if (receiptCatalogResult.errorMessage) {
-    redirect(buildNewReceiptUrl({ siteId, correctionEntryId, error: receiptCatalogResult.errorMessage }));
+    redirect(buildNewReceiptUrl({ siteId, correctionEntryId, draftId: draftId || undefined, error: receiptCatalogResult.errorMessage }));
   }
 
   const productsData = receiptCatalogResult.data;
@@ -1746,7 +1773,7 @@ export default async function ReceiptsPage({
     productUomProfilesResult.errorMessage ??
     procurementCostResult.errorMessage;
   if (catalogRelationError) {
-    redirect(buildNewReceiptUrl({ siteId, correctionEntryId, error: catalogRelationError }));
+    redirect(buildNewReceiptUrl({ siteId, correctionEntryId, draftId: draftId || undefined, error: catalogRelationError }));
   }
 
   const productSuppliersData = productSuppliersResult.data;
@@ -2158,7 +2185,7 @@ export default async function ReceiptsPage({
           <div>
             <h1 className="ui-h1">{correctionEntryId ? "Corregir recepción" : "Nueva recepción"}</h1>
             <p className="ui-body-muted">
-              {correctionEntryId ? "Ajusta la recepción original. El sistema reversa la entrada anterior y crea una nueva recepción corregida." : "Registra una entrada de inventario con proveedor, presentación, costo y LOC de destino."}
+              {correctionEntryId ? "Ajusta la recepción original. El sistema reversa la entrada anterior y crea una nueva recepción corregida." : "Registra una recepción física o guarda únicamente la compra y sus precios sin afectar inventario."}
             </p>
             <div className="mt-2 inline-flex rounded-full border border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-3 py-1 text-xs font-semibold text-[var(--ui-muted)]">
               Sede de recepción: {activeSiteName}
@@ -2175,7 +2202,7 @@ export default async function ReceiptsPage({
         </div>
         {okMsg ? (
           <div className="ui-alert ui-alert--success">
-            {okMsg === "corrected" ? "Recepción corregida correctamente." : "Recepción registrada correctamente."}
+            {okMsg === "corrected" ? "Recepción corregida correctamente." : okMsg === "recorded" ? "Compra registrada sin afectar inventario." : "Recepción registrada correctamente."}
           </div>
         ) : null}
         {errorMsg ? (
@@ -2207,6 +2234,7 @@ export default async function ReceiptsPage({
         serverErrorMessage={errorMsg}
         submitSuccess={Boolean(okMsg)}
         correctionEntryId={correctionEntryId}
+        draftId={draftId}
       />
 
     </div>

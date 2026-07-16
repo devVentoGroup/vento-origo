@@ -1,4 +1,5 @@
-﻿import Link from "next/link";
+﻿import { randomUUID } from "node:crypto";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { requireAppAccess } from "@/lib/auth/guard";
@@ -71,6 +72,8 @@ function formatEntryStatus(status: string | null) {
       return "Reversada";
     case "corrected":
       return "Corregida";
+    case "recorded":
+      return "Compra registrada";
     case "draft":
       return "Borrador";
     case "cancelled":
@@ -80,7 +83,9 @@ function formatEntryStatus(status: string | null) {
   }
 }
 
-function formatEntryMode(entryMode: string | null) {
+function formatEntryMode(entryMode: string | null, status: string | null) {
+  if (status === "recorded") return "Solo registro";
+
   switch (entryMode) {
     case "emergency":
       return "Directa";
@@ -131,9 +136,10 @@ function buildReceiptsUrl(params: { siteId?: string; ok?: string; historyError?:
   return query ? `/receipts?${query}` : "/receipts";
 }
 
-function buildNewReceiptUrl(siteId: string) {
+function buildNewReceiptUrl(siteId: string, draftId: string) {
   const search = new URLSearchParams();
   if (siteId) search.set("site_id", siteId);
+  if (draftId) search.set("draft_id", draftId);
   const query = search.toString();
   return query ? `/receipts/new?${query}` : "/receipts/new";
 }
@@ -278,6 +284,7 @@ export default async function ReceiptsPage({
 
   const activeSiteName = String(siteRow?.name ?? "Sede activa").trim();
   const nowMs = Date.now();
+  const newReceiptUrl = buildNewReceiptUrl(siteId, randomUUID());
 
   return (
     <div className="w-full space-y-6">
@@ -286,7 +293,7 @@ export default async function ReceiptsPage({
           <div>
             <h1 className="ui-h1">Recepciones</h1>
             <p className="ui-body-muted">
-              Consulta recepciones registradas, reversa errores con comentario y crea nuevas entradas desde una pantalla separada.
+              Consulta recepciones físicas y registros de compra sin inventario desde una misma trazabilidad.
             </p>
             <div className="mt-2 inline-flex rounded-full border border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-3 py-1 text-xs font-semibold text-[var(--ui-muted)]">
               Sede: {activeSiteName}
@@ -294,7 +301,7 @@ export default async function ReceiptsPage({
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <Link href={buildNewReceiptUrl(siteId)} className="ui-btn ui-btn--brand">
+            <Link href={newReceiptUrl} className="ui-btn ui-btn--brand">
               Nueva recepción
             </Link>
             <Link href="/purchase-orders" className="ui-btn ui-btn--ghost">
@@ -305,6 +312,11 @@ export default async function ReceiptsPage({
 
         {okMsg === "created" ? (
           <div className="ui-alert ui-alert--success">Recepción registrada correctamente.</div>
+        ) : null}
+        {okMsg === "recorded" ? (
+          <div className="ui-alert ui-alert--success">
+            Compra registrada correctamente sin modificar inventario.
+          </div>
         ) : null}
         {okMsg === "reversed" ? (
           <div className="ui-alert ui-alert--success">Recepción reversada correctamente.</div>
@@ -317,7 +329,7 @@ export default async function ReceiptsPage({
         ) : null}
       </section>
 
-      <section className="grid gap-4 md:grid-cols-4">
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <div className="rounded-[1.5rem] border border-[var(--ui-border)] bg-white p-4 shadow-sm">
           <div className="text-xs font-semibold uppercase tracking-wide text-[var(--ui-muted)]">Total histórico</div>
           <div className="mt-1 text-3xl font-bold text-[var(--ui-text)]">{entryRows.length}</div>
@@ -326,6 +338,12 @@ export default async function ReceiptsPage({
           <div className="text-xs font-semibold uppercase tracking-wide text-[var(--ui-muted)]">Recibidas</div>
           <div className="mt-1 text-3xl font-bold text-[var(--ui-text)]">
             {entryRows.filter((row) => row.status === "received").length}
+          </div>
+        </div>
+        <div className="rounded-[1.5rem] border border-[var(--ui-border)] bg-white p-4 shadow-sm">
+          <div className="text-xs font-semibold uppercase tracking-wide text-[var(--ui-muted)]">Solo registros</div>
+          <div className="mt-1 text-3xl font-bold text-[var(--ui-text)]">
+            {entryRows.filter((row) => row.status === "recorded").length}
           </div>
         </div>
         <div className="rounded-[1.5rem] border border-[var(--ui-border)] bg-white p-4 shadow-sm">
@@ -347,7 +365,7 @@ export default async function ReceiptsPage({
           <div>
             <div className="ui-h3">Historial de recepciones</div>
             <p className="mt-1 text-sm text-[var(--ui-muted)]">
-              Usa corrección auditada cuando necesites editar una recepción. La reversión simple queda solo para anular entradas.
+              Las recepciones físicas permiten corrección temporal. Los registros de compra quedan como trazabilidad informativa sin inventario.
             </p>
           </div>
         </div>
@@ -377,13 +395,18 @@ export default async function ReceiptsPage({
                     <td className="py-3 pr-3 font-semibold">{entryRow.supplier_name ?? "-"}</td>
                     <td className="py-3 pr-3">{entryRow.invoice_number ?? "-"}</td>
                     <td className="py-3 pr-3">
-                      <span className={entryRow.entry_mode === "emergency"
-                        ? "rounded-full bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-800"
-                        : "rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-800"}
+                      <span
+                        className={
+                          entryRow.status === "recorded"
+                            ? "rounded-full bg-sky-50 px-2 py-1 text-xs font-semibold text-sky-800"
+                            : entryRow.entry_mode === "emergency"
+                              ? "rounded-full bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-800"
+                              : "rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-800"
+                        }
                       >
-                        {formatEntryMode(entryRow.entry_mode)}
+                        {formatEntryMode(entryRow.entry_mode, entryRow.status)}
                       </span>
-                      {entryRow.entry_mode === "emergency" && entryRow.emergency_reason ? (
+                      {entryRow.status !== "recorded" && entryRow.entry_mode === "emergency" && entryRow.emergency_reason ? (
                         <div className="mt-1 max-w-[220px] text-xs text-[var(--ui-muted)]">
                           {entryRow.emergency_reason}
                         </div>
@@ -423,6 +446,10 @@ export default async function ReceiptsPage({
                           <div className="mt-1">
                             La ventana operativa es de {RECEIPT_ACTION_WINDOW_MINUTES} minutos desde la creación.
                           </div>
+                        </div>
+                      ) : entryRow.status === "recorded" ? (
+                        <div className="max-w-[240px] rounded-2xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900">
+                          Registro informativo: no generó movimientos de inventario.
                         </div>
                       ) : (
                         <span className="text-xs text-[var(--ui-muted)]">Sin acciones</span>

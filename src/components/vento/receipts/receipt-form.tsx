@@ -1,6 +1,14 @@
 "use client";
 
-import { type FormEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  type SyntheticEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { useFormStatus } from "react-dom";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { formatPurchaseOrderRef } from "@/lib/purchase-orders/reference";
 
@@ -81,6 +89,7 @@ type PrefillRow = {
 };
 
 type CostInputMode = "net" | "gross";
+type ReceiptOperationMode = "inventory" | "record_only";
 
 type MasterDataRequestKind = "new_product" | "new_presentation";
 
@@ -139,6 +148,7 @@ type ReceiptLine = {
 };
 
 type StoredReceiptDraft = {
+  operationMode?: ReceiptOperationMode;
   supplierId?: string;
   invoiceNumber?: string;
   notes?: string;
@@ -166,6 +176,7 @@ type Props = {
   serverErrorMessage?: string;
   submitSuccess?: boolean;
   correctionEntryId?: string;
+  draftId?: string;
   requiresSharedDeviceActorSignature?: boolean;
 };
 
@@ -285,6 +296,7 @@ function readStoredDraft(storageKey: string, defaultLocationId: string): StoredR
     const parsed = JSON.parse(raw) as StoredReceiptDraft;
     return {
       ...parsed,
+      operationMode: parsed.operationMode === "record_only" ? "record_only" : "inventory",
       lines: normalizeStoredLines(parsed.lines, defaultLocationId) ?? undefined,
       masterDataRequests: normalizeMasterDataRequests(parsed.masterDataRequests),
     };
@@ -571,6 +583,32 @@ function shortProductName(product: ProductRow | undefined) {
   return String(product?.name ?? "Producto").trim();
 }
 
+function ReceiptSubmitButton({
+  isCorrectionMode,
+  hasPendingMasterDataReview,
+  movesInventory,
+}: {
+  isCorrectionMode: boolean;
+  hasPendingMasterDataReview: boolean;
+  movesInventory: boolean;
+}) {
+  const { pending } = useFormStatus();
+
+  const idleLabel = isCorrectionMode
+    ? "Guardar corrección"
+    : hasPendingMasterDataReview
+      ? "Enviar recepción a revisión"
+      : movesInventory
+        ? "Registrar recepción"
+        : "Registrar compra sin inventario";
+
+  return (
+    <button type="submit" className="ui-btn ui-btn--brand w-full" disabled={pending}>
+      {pending ? "Guardando..." : idleLabel}
+    </button>
+  );
+}
+
 export function ReceiptForm({
   action,
   siteId,
@@ -588,6 +626,7 @@ export function ReceiptForm({
   serverErrorMessage = "",
   submitSuccess = false,
   correctionEntryId = "",
+  draftId = "",
   requiresSharedDeviceActorSignature = false,
 }: Props) {
   const router = useRouter();
@@ -595,27 +634,33 @@ export function ReceiptForm({
   const searchParams = useSearchParams();
   const defaultLocationId = "";
   const isCorrectionMode = Boolean(correctionEntryId);
-  const receiptDraftScope = isCorrectionMode
-    ? `correction:${correctionEntryId}`
-    : selectedPurchaseOrderId
-      ? `po:${selectedPurchaseOrderId}`
-      : "direct";
+  const receiptDraftScope = draftId
+    ? `draft:${draftId}:${selectedPurchaseOrderId ? `po:${selectedPurchaseOrderId}` : "direct"}`
+    : isCorrectionMode
+      ? `correction:${correctionEntryId}`
+      : selectedPurchaseOrderId
+        ? `po:${selectedPurchaseOrderId}`
+        : "direct";
   const storageKey = `origo:receipts:form:${siteId}:${receiptDraftScope}`;
   const legacyStorageKey = `origo:receipts:form:${siteId}`;
   const storedDraft = readStoredDraft(storageKey, defaultLocationId);
+  const hasStoredDraft = Boolean(storedDraft);
   const previousSiteIdRef = useRef(siteId);
 
+  const [operationMode, setOperationMode] = useState<ReceiptOperationMode>(
+    isCorrectionMode ? "inventory" : storedDraft?.operationMode ?? "inventory"
+  );
   const [supplierId, setSupplierId] = useState(
-    selectedPurchaseOrderId || isCorrectionMode ? prefillSupplierId : storedDraft?.supplierId ?? prefillSupplierId
+    isCorrectionMode ? prefillSupplierId : storedDraft?.supplierId ?? prefillSupplierId
   );
   const [invoiceNumber, setInvoiceNumber] = useState(
-    selectedPurchaseOrderId || isCorrectionMode ? prefillInvoiceNumber : storedDraft?.invoiceNumber ?? prefillInvoiceNumber
+    isCorrectionMode ? prefillInvoiceNumber : storedDraft?.invoiceNumber ?? prefillInvoiceNumber
   );
   const [notes, setNotes] = useState(
-    selectedPurchaseOrderId || isCorrectionMode ? prefillNotes : storedDraft?.notes ?? prefillNotes
+    isCorrectionMode ? prefillNotes : storedDraft?.notes ?? prefillNotes
   );
   const [receivedAt, setReceivedAt] = useState(
-    selectedPurchaseOrderId || isCorrectionMode ? prefillReceivedAt : storedDraft?.receivedAt ?? prefillReceivedAt
+    isCorrectionMode ? prefillReceivedAt : storedDraft?.receivedAt ?? prefillReceivedAt
   );
   const [isExceptionReceipt, setIsExceptionReceipt] = useState(Boolean(storedDraft?.isExceptionReceipt));
   const [emergencyReason, setEmergencyReason] = useState(storedDraft?.emergencyReason ?? "");
@@ -623,7 +668,7 @@ export function ReceiptForm({
   const [lines, setLines] = useState<ReceiptLine[]>(() => {
     const initialRows = buildInitialRows({ prefillRows, defaultLocationId });
 
-    if (selectedPurchaseOrderId || isCorrectionMode) return initialRows;
+    if (isCorrectionMode) return initialRows;
 
     return storedDraft?.lines?.length ? storedDraft.lines : initialRows;
   });
@@ -632,12 +677,11 @@ export function ReceiptForm({
   const [masterDataRequests, setMasterDataRequests] = useState<MasterDataRequestPayload[]>(() =>
     normalizeMasterDataRequests(storedDraft?.masterDataRequests)
   );
-  const [isSaving, setIsSaving] = useState(false);
-  const [clientSubmitError, setClientSubmitError] = useState("");
 
   const entryMode = selectedPurchaseOrderId ? "normal" : "emergency";
   const isPurchaseOrderReceipt = entryMode === "normal";
   const isDirectReceipt = !isPurchaseOrderReceipt;
+  const movesInventory = isCorrectionMode || operationMode === "inventory";
   const selectedSupplier = suppliers.find((supplier) => supplier.id === supplierId) ?? null;
   const effectiveEmergencyReason =
     isDirectReceipt && !isExceptionReceipt
@@ -758,6 +802,7 @@ export function ReceiptForm({
 
   useEffect(() => {
     if (!selectedPurchaseOrderId && !isCorrectionMode) return;
+    if (!isCorrectionMode && hasStoredDraft) return;
 
     const initialRows = buildInitialRows({ prefillRows, defaultLocationId });
 
@@ -770,16 +815,16 @@ export function ReceiptForm({
     setReceivedAt(prefillReceivedAt);
     setEmergencyReason("");
     setIsExceptionReceipt(false);
+    setOperationMode("inventory");
     setActiveProductPickerIndex(null);
     setLines(initialRows);
     setFieldErrors({});
     setRequestDraft(null);
     setMasterDataRequests([]);
-    setIsSaving(false);
-    setClientSubmitError("");
   }, [
     selectedPurchaseOrderId,
     isCorrectionMode,
+    hasStoredDraft,
     correctionEntryId,
     prefillSupplierId,
     prefillInvoiceNumber,
@@ -792,7 +837,15 @@ export function ReceiptForm({
 
   useEffect(() => {
     window.sessionStorage.removeItem(legacyStorageKey);
-  }, [legacyStorageKey]);
+
+    const prefix = `origo:receipts:form:${siteId}:`;
+    for (let index = window.sessionStorage.length - 1; index >= 0; index -= 1) {
+      const key = window.sessionStorage.key(index);
+      if (key?.startsWith(prefix) && key !== storageKey) {
+        window.sessionStorage.removeItem(key);
+      }
+    }
+  }, [legacyStorageKey, siteId, storageKey]);
 
   useEffect(() => {
     if (!submitSuccess) return;
@@ -805,13 +858,12 @@ export function ReceiptForm({
     setReceivedAt(isCorrectionMode ? prefillReceivedAt : "");
     setEmergencyReason("");
     setIsExceptionReceipt(false);
+    setOperationMode("inventory");
     setActiveProductPickerIndex(null);
     setLines([makeEmptyLine(defaultLocationId)]);
     setFieldErrors({});
     setRequestDraft(null);
     setMasterDataRequests([]);
-    setIsSaving(false);
-    setClientSubmitError("");
   }, [isCorrectionMode, legacyStorageKey, prefillReceivedAt, prefillRows, prefillSupplierId, selectedPurchaseOrderId, storageKey, submitSuccess]);
 
   useEffect(() => {
@@ -826,19 +878,19 @@ export function ReceiptForm({
     setReceivedAt("");
     setEmergencyReason("");
     setIsExceptionReceipt(false);
+    setOperationMode("inventory");
     setActiveProductPickerIndex(null);
     setLines([makeEmptyLine(defaultLocationId)]);
     setFieldErrors({});
     setRequestDraft(null);
     setMasterDataRequests([]);
-    setIsSaving(false);
-    setClientSubmitError("");
   }, [legacyStorageKey, siteId, storageKey]);
 
   useEffect(() => {
     if (submitSuccess) return;
 
     const payload = {
+      operationMode,
       supplierId,
       invoiceNumber,
       notes,
@@ -856,11 +908,34 @@ export function ReceiptForm({
     lines,
     masterDataRequests,
     notes,
+    operationMode,
     receivedAt,
     storageKey,
     submitSuccess,
     supplierId,
   ]);
+
+  const changeOperationMode = (nextMode: ReceiptOperationMode) => {
+    if (isCorrectionMode) return;
+
+    setOperationMode(nextMode);
+    setFieldErrors({});
+    setRequestDraft(null);
+
+    if (nextMode === "record_only") {
+      setMasterDataRequests([]);
+      setLines((currentLines) =>
+        currentLines.map((line) => ({
+          ...line,
+          locationId: "",
+          positionId: "",
+          lotNumber: "",
+          expiryDate: "",
+          pendingMasterDataRequestId: "",
+        }))
+      );
+    }
+  };
 
   const addLine = () => {
     setLines((prev) => [...prev, makeEmptyLine(defaultLocationId)]);
@@ -1056,13 +1131,13 @@ export function ReceiptForm({
       prev.map((line) =>
         line.pendingMasterDataRequestId === requestId
           ? {
-              ...line,
-              pendingMasterDataRequestId: "",
-              presentationId: "",
-              inputUnitCode: "",
-              inputUnitLabel: "",
-              conversionFactorToStock: "1",
-            }
+            ...line,
+            pendingMasterDataRequestId: "",
+            presentationId: "",
+            inputUnitCode: "",
+            inputUnitLabel: "",
+            conversionFactorToStock: "1",
+          }
           : line
       )
     );
@@ -1078,15 +1153,21 @@ export function ReceiptForm({
     event.preventDefault();
   };
 
-  const hasPendingMasterDataReview = masterDataRequests.some(
+  const hasPendingMasterDataReview = movesInventory && masterDataRequests.some(
     (request) => request.kind === "new_presentation"
   );
 
-  const handleClientValidation = (event: FormEvent<HTMLFormElement>) => {
+  const handleClientValidation = (
+    event: SyntheticEvent<HTMLFormElement>
+  ) => {
     const nextErrors: Record<string, string> = {};
     if (!supplierId) nextErrors["supplier_id"] = "Selecciona un proveedor.";
     if (isDirectReceipt && isExceptionReceipt && !emergencyReason.trim()) {
       nextErrors["emergency_reason"] = "Escribe el motivo de la excepción.";
+    }
+
+    if (!movesInventory && masterDataRequests.length > 0) {
+      nextErrors["lines"] = "El modo solo registro requiere productos y presentaciones ya aprobados.";
     }
 
     const hasAtLeastOneValidLine = lines.some((line) => {
@@ -1095,12 +1176,14 @@ export function ReceiptForm({
       const isPurchaseOrderLine = isPurchaseOrderReceipt && Boolean(line.purchaseOrderItemId);
       const hasPresentationSnapshot = isPurchaseOrderLine
         ? Boolean(line.inputUnitLabel) && factor > 0
-        : (Boolean(line.presentationId) || Boolean(line.pendingMasterDataRequestId)) && Boolean(line.inputUnitLabel) && factor > 0;
+        : (Boolean(line.presentationId) || (movesInventory && Boolean(line.pendingMasterDataRequestId))) &&
+        Boolean(line.inputUnitLabel) &&
+        factor > 0;
 
       return Boolean(line.productId) && hasPresentationSnapshot && Number.isFinite(qty) && qty > 0;
     });
     if (!hasAtLeastOneValidLine) {
-      nextErrors["lines"] = "Agrega al menos un item con producto y cantidad mayor a 0.";
+      nextErrors["lines"] = "Agrega al menos un item con producto, presentación y cantidad mayor a 0.";
     }
 
     lines.forEach((line, index) => {
@@ -1113,20 +1196,28 @@ export function ReceiptForm({
 
       if (!hasProduct) nextErrors[`line_${index}_productId`] = "Selecciona producto.";
       if (!hasQty) nextErrors[`line_${index}_quantity`] = "Ingresa cantidad válida.";
-      if (!line.locationId) nextErrors[`line_${index}_locationId`] = "Selecciona LOC.";
+      if (movesInventory && !line.locationId) {
+        nextErrors[`line_${index}_locationId`] = "Selecciona LOC.";
+      }
       if (!line.inputUnitLabel.trim() || !Number.isFinite(factor) || factor <= 0) {
         nextErrors[`line_${index}_presentation`] = "Define una presentación válida.";
       }
 
-      if (!line.purchaseOrderItemId && !line.presentationId && !line.pendingMasterDataRequestId) {
-        nextErrors[`line_${index}_presentation`] = "Selecciona una presentación activa o agrega una solicitud de nueva presentación.";
+      const hasAllowedPresentation =
+        Boolean(line.purchaseOrderItemId) ||
+        Boolean(line.presentationId) ||
+        (movesInventory && Boolean(line.pendingMasterDataRequestId));
+      if (!hasAllowedPresentation) {
+        nextErrors[`line_${index}_presentation`] = movesInventory
+          ? "Selecciona una presentación activa o agrega una solicitud de nueva presentación."
+          : "Selecciona una presentación activa. El modo solo registro no admite presentaciones pendientes.";
       }
 
       const product = line.productId ? productMap.get(line.productId) : null;
-      if (product?.lot_tracking && !line.lotNumber.trim()) {
+      if (movesInventory && product?.lot_tracking && !line.lotNumber.trim()) {
         nextErrors[`line_${index}_lotNumber`] = "Este producto requiere lote.";
       }
-      if (product?.expiry_tracking && !line.expiryDate.trim()) {
+      if (movesInventory && product?.expiry_tracking && !line.expiryDate.trim()) {
         nextErrors[`line_${index}_expiryDate`] = "Este producto requiere vencimiento.";
       }
     });
@@ -1134,16 +1225,7 @@ export function ReceiptForm({
     setFieldErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) {
       event.preventDefault();
-      setIsSaving(false);
-      return;
     }
-
-    setClientSubmitError("");
-    setIsSaving(true);
-    window.setTimeout(() => {
-      setIsSaving(false);
-      setClientSubmitError("Si el servidor rechazó la recepción, revisa el mensaje y vuelve a intentar.");
-    }, 12000);
   };
 
   return (
@@ -1154,6 +1236,8 @@ export function ReceiptForm({
       onSubmit={handleClientValidation}
     >
       <input type="hidden" name="site_id" value={siteId} />
+      <input type="hidden" name="draft_id" value={draftId} />
+      <input type="hidden" name="receipt_operation_mode" value={movesInventory ? "inventory" : "record_only"} />
       <input type="hidden" name="supplier_id" value={supplierId} />
       <input type="hidden" name="purchase_order_id" value={selectedPurchaseOrderId} />
       <input type="hidden" name="correction_entry_id" value={correctionEntryId} />
@@ -1178,20 +1262,24 @@ export function ReceiptForm({
         <section className="rounded-[1.75rem] border border-[var(--ui-border)] bg-white p-5 shadow-sm">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <div className="ui-caption">{isCorrectionMode ? "Corrección auditada" : "Tipo de recepción"}</div>
+              <div className="ui-caption">{isCorrectionMode ? "Corrección auditada" : "Tipo de registro"}</div>
               <h2 className="mt-1 text-xl font-bold text-[var(--ui-text)]">
                 {isCorrectionMode
                   ? "Corregir recepción"
-                  : isPurchaseOrderReceipt
-                    ? "Recepción con orden de compra"
-                    : "Recepción directa"}
+                  : movesInventory
+                    ? isPurchaseOrderReceipt
+                      ? "Recepción física con orden de compra"
+                      : "Recepción física directa"
+                    : "Solo registrar compra"}
               </h2>
               <p className="mt-1 max-w-3xl text-sm leading-6 text-[var(--ui-muted)]">
                 {isCorrectionMode
                   ? "Ajusta los datos de la recepción original. Al guardar se reversa la recepción anterior y se crea una nueva recepción corregida con trazabilidad."
-                  : isPurchaseOrderReceipt
-                    ? "Carga los insumos pendientes de la OC, confirma cantidades reales y agrega extras solo si llegaron por urgencia."
-                    : "Recibe compras sin OC sin tratarlas como error operativo. Selecciona proveedor, insumos, presentación, costo e inventario destino."}
+                  : movesInventory
+                    ? isPurchaseOrderReceipt
+                      ? "Carga los insumos pendientes de la OC, confirma cantidades reales y define el inventario de destino."
+                      : "Registra la entrada física con proveedor, presentación, costo, LOC y ubicación de inventario."
+                    : "Guarda proveedor, factura, cantidades y precios para trazabilidad de compras. No crea movimientos ni modifica existencias."}
               </p>
             </div>
 
@@ -1199,13 +1287,66 @@ export function ReceiptForm({
               <span className={isPurchaseOrderReceipt ? "ui-chip ui-chip--success" : "ui-chip ui-chip--info"}>
                 {isPurchaseOrderReceipt ? "Con OC" : "Sin OC"}
               </span>
-              {isDirectReceipt && isExceptionReceipt ? (
+              <span className={movesInventory ? "ui-chip ui-chip--success" : "ui-chip ui-chip--info"}>
+                {movesInventory ? "Mueve inventario" : "Solo registro"}
+              </span>
+              {movesInventory && isDirectReceipt && isExceptionReceipt ? (
                 <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800">
                   Excepción
                 </span>
               ) : null}
             </div>
           </div>
+
+          {!isCorrectionMode ? (
+            <div className="mt-5 grid gap-3 md:grid-cols-2">
+              <label
+                className={`cursor-pointer rounded-2xl border p-4 transition ${movesInventory
+                  ? "border-emerald-300 bg-emerald-50"
+                  : "border-[var(--ui-border)] bg-[var(--ui-surface-2)]"
+                  }`}
+              >
+                <div className="flex items-start gap-3">
+                  <input
+                    type="radio"
+                    name="receipt_operation_mode_selector"
+                    value="inventory"
+                    checked={movesInventory}
+                    onChange={() => changeOperationMode("inventory")}
+                  />
+                  <div>
+                    <div className="font-bold text-[var(--ui-text)]">Recepción física</div>
+                    <p className="mt-1 text-sm leading-5 text-[var(--ui-muted)]">
+                      Registra la compra, crea movimientos y aumenta el inventario de la sede.
+                    </p>
+                  </div>
+                </div>
+              </label>
+
+              <label
+                className={`cursor-pointer rounded-2xl border p-4 transition ${!movesInventory
+                  ? "border-sky-300 bg-sky-50"
+                  : "border-[var(--ui-border)] bg-[var(--ui-surface-2)]"
+                  }`}
+              >
+                <div className="flex items-start gap-3">
+                  <input
+                    type="radio"
+                    name="receipt_operation_mode_selector"
+                    value="record_only"
+                    checked={!movesInventory}
+                    onChange={() => changeOperationMode("record_only")}
+                  />
+                  <div>
+                    <div className="font-bold text-[var(--ui-text)]">Solo registrar compra</div>
+                    <p className="mt-1 text-sm leading-5 text-[var(--ui-muted)]">
+                      Guarda factura, cantidades y precios. No modifica existencias ni ubicaciones.
+                    </p>
+                  </div>
+                </div>
+              </label>
+            </div>
+          ) : null}
 
           <div className="mt-5 grid gap-3 lg:grid-cols-4">
             <label className="flex flex-col gap-1 lg:col-span-2">
@@ -1288,45 +1429,58 @@ export function ReceiptForm({
           </div>
 
           {isDirectReceipt ? (
-            <div className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-950">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <div className="font-semibold">Recepción directa sin OC</div>
-                  <p className="mt-1">
-                    No se bloquea el flujo por no existir OC. El sistema dejará trazabilidad y actualizará costos reales desde la recepción.
-                  </p>
+            movesInventory ? (
+              <div className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-950">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="font-semibold">Recepción física directa sin OC</div>
+                    <p className="mt-1">
+                      El sistema dejará trazabilidad, actualizará costos y aumentará el inventario en la ubicación seleccionada.
+                    </p>
+                  </div>
+
+                  <label className="inline-flex items-center gap-2 rounded-full border border-sky-200 bg-white px-3 py-2 text-xs font-semibold">
+                    <input
+                      type="checkbox"
+                      checked={isExceptionReceipt}
+                      onChange={(e) => setIsExceptionReceipt(e.target.checked)}
+                    />
+                    Marcar como excepción
+                  </label>
                 </div>
 
-                <label className="inline-flex items-center gap-2 rounded-full border border-sky-200 bg-white px-3 py-2 text-xs font-semibold">
-                  <input
-                    type="checkbox"
-                    checked={isExceptionReceipt}
-                    onChange={(e) => setIsExceptionReceipt(e.target.checked)}
-                  />
-                  Marcar como excepción
-                </label>
+                {isExceptionReceipt ? (
+                  <label className="mt-3 flex flex-col gap-1">
+                    <span className="ui-label">Motivo de excepción</span>
+                    <input
+                      className="ui-input bg-white"
+                      placeholder="Ej: compra urgente sin OC por falta de stock"
+                      value={emergencyReason}
+                      onChange={(e) => setEmergencyReason(e.target.value)}
+                    />
+                    {fieldErrors["emergency_reason"] ? (
+                      <span className="text-xs text-rose-600">{fieldErrors["emergency_reason"]}</span>
+                    ) : null}
+                  </label>
+                ) : null}
               </div>
-
-              {isExceptionReceipt ? (
-                <label className="mt-3 flex flex-col gap-1">
-                  <span className="ui-label">Motivo de excepción</span>
-                  <input
-                    className="ui-input bg-white"
-                    placeholder="Ej: compra urgente sin OC por falta de stock"
-                    value={emergencyReason}
-                    onChange={(e) => setEmergencyReason(e.target.value)}
-                  />
-                  {fieldErrors["emergency_reason"] ? (
-                    <span className="text-xs text-rose-600">{fieldErrors["emergency_reason"]}</span>
-                  ) : null}
-                </label>
-              ) : null}
-            </div>
+            ) : (
+              <div className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-950">
+                <div className="font-semibold">Registro de compra sin OC</div>
+                <p className="mt-1">
+                  Se guardarán la factura y los precios por proveedor y presentación. El inventario permanecerá exactamente igual.
+                </p>
+              </div>
+            )
           ) : (
             <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950">
-              <div className="font-semibold">Recepción vinculada a OC</div>
+              <div className="font-semibold">
+                {movesInventory ? "Recepción vinculada a OC" : "Compra vinculada a OC sin recibir inventario"}
+              </div>
               <p className="mt-1">
-                Los productos de la OC se cargan automáticamente. Si llegó un insumo adicional por urgencia, agrégalo como extra fuera de OC.
+                {movesInventory
+                  ? "Los productos de la OC se cargan automáticamente y las cantidades recibidas actualizarán su avance."
+                  : "La OC sirve como referencia y precarga datos, pero no se marcarán cantidades como recibidas ni se cerrará la orden."}
               </p>
             </div>
           )}
@@ -1350,9 +1504,13 @@ export function ReceiptForm({
         <section className="rounded-[1.75rem] border border-[var(--ui-border)] bg-white p-5 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h3 className="text-lg font-bold text-[var(--ui-text)]">Insumos recibidos</h3>
+              <h3 className="text-lg font-bold text-[var(--ui-text)]">
+                {movesInventory ? "Insumos recibidos" : "Insumos comprados"}
+              </h3>
               <p className="mt-1 text-sm text-[var(--ui-muted)]">
-                Primero selecciona proveedor; después agrega insumos, presentación, costo, LOC y ubicación interna.
+                {movesInventory
+                  ? "Selecciona proveedor, presentación, costo, LOC y ubicación interna."
+                  : "Selecciona proveedor, presentación, cantidad y costo. No se solicitará destino de inventario."}
               </p>
             </div>
 
@@ -1403,12 +1561,12 @@ export function ReceiptForm({
                     </div>
 
                     <div className="flex flex-wrap gap-2">
-                      {product?.lot_tracking ? (
+                      {movesInventory && product?.lot_tracking ? (
                         <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-800">
                           Requiere lote
                         </span>
                       ) : null}
-                      {product?.expiry_tracking ? (
+                      {movesInventory && product?.expiry_tracking ? (
                         <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-800">
                           Requiere vencimiento
                         </span>
@@ -1493,21 +1651,25 @@ export function ReceiptForm({
 
                               {!visibleProductOptionsByLine[index]?.length ? (
                                 <div className="rounded-2xl border border-dashed border-[var(--ui-border)] p-4 text-sm text-[var(--ui-muted)]">
-                                  No encontramos ese insumo. Puedes solicitarlo para revisión de maestro de datos.
+                                  {movesInventory
+                                    ? "No encontramos ese insumo. Puedes solicitarlo para revisión de maestro de datos."
+                                    : "No encontramos ese insumo. En solo registro debes usar un producto existente."}
                                 </div>
                               ) : null}
 
-                              <div className="grid gap-2 pt-2 sm:grid-cols-2">
-                                <button
-                                  type="button"
-                                  className="rounded-2xl border border-dashed border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-3 py-2 text-left text-xs font-semibold text-[var(--ui-text)] transition hover:border-[var(--ui-brand)] hover:bg-[var(--ui-brand)]/5"
-                                  onClick={() => openNewProductRequest(index)}
-                                >
-                                  Solicitar nuevo insumo
-                                  <span className="mt-1 block font-normal text-[var(--ui-muted)]">
-                                    Lo revisa maestro de datos antes de quedar en catálogo.
-                                  </span>
-                                </button>
+                              <div className={`grid gap-2 pt-2 ${movesInventory ? "sm:grid-cols-2" : ""}`}>
+                                {movesInventory ? (
+                                  <button
+                                    type="button"
+                                    className="rounded-2xl border border-dashed border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-3 py-2 text-left text-xs font-semibold text-[var(--ui-text)] transition hover:border-[var(--ui-brand)] hover:bg-[var(--ui-brand)]/5"
+                                    onClick={() => openNewProductRequest(index)}
+                                  >
+                                    Solicitar nuevo insumo
+                                    <span className="mt-1 block font-normal text-[var(--ui-muted)]">
+                                      Lo revisa maestro de datos antes de quedar en catálogo.
+                                    </span>
+                                  </button>
+                                ) : null}
                                 <button
                                   type="button"
                                   className="rounded-2xl border border-dashed border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-3 py-2 text-left text-xs font-semibold text-[var(--ui-muted)]"
@@ -1515,7 +1677,9 @@ export function ReceiptForm({
                                 >
                                   Cerrar buscador
                                   <span className="mt-1 block font-normal text-[var(--ui-muted)]">
-                                    Para presentaciones, selecciona primero un insumo.
+                                    {movesInventory
+                                      ? "Para presentaciones, selecciona primero un insumo."
+                                      : "Solo se admiten productos y presentaciones existentes."}
                                   </span>
                                 </button>
                               </div>
@@ -1541,12 +1705,13 @@ export function ReceiptForm({
                       <div className="mt-3 grid gap-3">
                         {!isPurchaseOrderLine && product && productPresentations.length === 0 ? (
                           <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-950">
-                            Este insumo no tiene presentaciones manuales activas. Solicita una nueva presentación
-                            para revisión de maestro de datos antes de registrarlo.
+                            {movesInventory
+                              ? "Este insumo no tiene presentaciones manuales activas. Solicita una nueva presentación para revisión antes de registrarlo."
+                              : "Este insumo no tiene presentaciones activas y no puede usarse en el modo solo registro."}
                           </div>
                         ) : null}
 
-                        {line.pendingMasterDataRequestId ? (
+                        {movesInventory && line.pendingMasterDataRequestId ? (
                           <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-950">
                             Esta línea usa una presentación nueva pendiente. La recepción quedará en revisión y no moverá inventario hasta aprobación.
                           </div>
@@ -1596,7 +1761,7 @@ export function ReceiptForm({
 
                         <div className="grid gap-3 sm:grid-cols-2">
                           <label className="flex flex-col">
-                            <span className="ui-label">Presentación recibida</span>
+                            <span className="ui-label">{movesInventory ? "Presentación recibida" : "Presentación comprada"}</span>
                             <input
                               className="ui-input mt-1"
                               placeholder="Ej: Caja x 12"
@@ -1607,7 +1772,7 @@ export function ReceiptForm({
                           </label>
 
                           <label className="flex flex-col">
-                            <span className="ui-label">Cantidad recibida</span>
+                            <span className="ui-label">{movesInventory ? "Cantidad recibida" : "Cantidad comprada"}</span>
                             <input
                               name="item_quantity_received"
                               className="ui-input mt-1"
@@ -1621,7 +1786,7 @@ export function ReceiptForm({
                         </div>
 
                         <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3 text-xs text-[var(--ui-muted)]">
-                          <div className="font-semibold text-[var(--ui-text)]">Conversión</div>
+                          <div className="font-semibold text-[var(--ui-text)]">{movesInventory ? "Conversión a stock" : "Equivalencia informativa"}</div>
                           <div className="mt-1">
                             {cost.inputQty > 0
                               ? `${formatQty(cost.inputQty)} ${inputUnitLabel} = ${formatQty(cost.stockQty)} ${stockUnitCode}`
@@ -1629,7 +1794,7 @@ export function ReceiptForm({
                           </div>
                         </div>
 
-                        {!isPurchaseOrderReceipt ? (
+                        {!isPurchaseOrderReceipt && movesInventory ? (
                           <button
                             type="button"
                             className="w-full rounded-2xl border border-dashed border-[var(--ui-border)] bg-[var(--ui-surface-2)] px-3 py-2 text-left text-xs font-semibold text-[var(--ui-text)] transition hover:border-[var(--ui-brand)] hover:bg-[var(--ui-brand)]/5 disabled:cursor-not-allowed disabled:opacity-50"
@@ -1865,107 +2030,135 @@ export function ReceiptForm({
                     </div>
                   ) : null}
 
-                  <div className="mt-4 grid gap-3 lg:grid-cols-4">
-                    <label>
-                      <span className="ui-label">LOC / destino operativo</span>
-                      <select
-                        name="item_location_id"
-                        className="ui-input mt-1"
-                        value={line.locationId}
-                        onChange={(e) => updateLine(index, { locationId: e.target.value, positionId: "" })}
-                      >
-                        <option value="">Seleccionar LOC</option>
-                        {locations.length === 0 ? (
-                          <option value="" disabled>
-                            No hay LOC activos para esta sede
-                          </option>
-                        ) : null}
-                        {locations.map((location) => (
-                          <option key={location.id} value={location.id}>
-                            {formatReceiptLocationLabel(location)}
-                          </option>
-                        ))}
-                      </select>
-                      {fieldErrors[`line_${index}_locationId`] ? (
-                        <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_locationId`]}</p>
-                      ) : null}
-                    </label>
+                  {movesInventory ? (
+                    <>
+                      <div className="mt-4 grid gap-3 lg:grid-cols-4">
+                        <label>
+                          <span className="ui-label">LOC / destino operativo</span>
+                          <select
+                            name="item_location_id"
+                            className="ui-input mt-1"
+                            value={line.locationId}
+                            onChange={(e) => updateLine(index, { locationId: e.target.value, positionId: "" })}
+                          >
+                            <option value="">Seleccionar LOC</option>
+                            {locations.length === 0 ? (
+                              <option value="" disabled>
+                                No hay LOC activos para esta sede
+                              </option>
+                            ) : null}
+                            {locations.map((location) => (
+                              <option key={location.id} value={location.id}>
+                                {formatReceiptLocationLabel(location)}
+                              </option>
+                            ))}
+                          </select>
+                          {fieldErrors[`line_${index}_locationId`] ? (
+                            <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_locationId`]}</p>
+                          ) : null}
+                        </label>
 
-                    {!line.locationId ? (
-                      <div className="lg:col-span-2 rounded-2xl border border-[var(--ui-border)] bg-white px-4 py-3 text-xs text-[var(--ui-muted)]">
-                        Selecciona primero un LOC para ver ubicaciones internas.
-                        <input type="hidden" name="item_location_position_id" value="" />
+                        {!line.locationId ? (
+                          <div className="lg:col-span-2 rounded-2xl border border-[var(--ui-border)] bg-white px-4 py-3 text-xs text-[var(--ui-muted)]">
+                            Selecciona primero un LOC para ver ubicaciones internas.
+                            <input type="hidden" name="item_location_position_id" value="" />
+                          </div>
+                        ) : hasInternalPositions ? (
+                          <label className="lg:col-span-2">
+                            <span className="ui-label">Ubicación interna</span>
+                            <select
+                              name="item_location_position_id"
+                              className="ui-input mt-1"
+                              value={line.positionId}
+                              onChange={(e) => updateLine(index, { positionId: e.target.value })}
+                            >
+                              <option value="">Sin ubicación interna</option>
+                              {buildPositionTreeOptions(linePositions, positionById).map(({ position, label }) => (
+                                <option key={position.id} value={position.id}>
+                                  {label}
+                                </option>
+                              ))}
+                            </select>
+                            <p className="mt-1 text-xs text-[var(--ui-muted)]">
+                              Usa la misma estructura de Conteo: estantería → nivel → bin.
+                            </p>
+                          </label>
+                        ) : (
+                          <div className="lg:col-span-2 rounded-2xl border border-[var(--ui-border)] bg-white px-4 py-3 text-xs text-[var(--ui-muted)]">
+                            Este LOC no tiene ubicaciones internas configuradas.
+                            <input type="hidden" name="item_location_position_id" value="" />
+                          </div>
+                        )}
+
+                        <label>
+                          <span className="ui-label">Notas línea</span>
+                          <input
+                            name="item_notes"
+                            className="ui-input mt-1"
+                            placeholder="Opcional"
+                            value={line.notes}
+                            onChange={(e) => updateLine(index, { notes: e.target.value })}
+                          />
+                        </label>
                       </div>
-                    ) : hasInternalPositions ? (
-                      <label className="lg:col-span-2">
-                        <span className="ui-label">Ubicación interna</span>
-                        <select
-                          name="item_location_position_id"
-                          className="ui-input mt-1"
-                          value={line.positionId}
-                          onChange={(e) => updateLine(index, { positionId: e.target.value })}
-                        >
-                          <option value="">Sin ubicación interna</option>
-                          {buildPositionTreeOptions(linePositions, positionById).map(({ position, label }) => (
-                            <option key={position.id} value={position.id}>
-                              {label}
-                            </option>
-                          ))}
-                        </select>
-                        <p className="mt-1 text-xs text-[var(--ui-muted)]">
-                          Usa la misma estructura de Conteo: estantería → nivel → bin.
+
+                      <div className="mt-4 grid gap-3 md:grid-cols-2">
+                        <label>
+                          <span className="ui-label">Lote</span>
+                          <input
+                            name="item_lot_number"
+                            className="ui-input mt-1"
+                            placeholder={product?.lot_tracking ? "Obligatorio" : "Opcional"}
+                            value={line.lotNumber}
+                            onChange={(e) => updateLine(index, { lotNumber: e.target.value })}
+                            required={Boolean(line.productId && productMap.get(line.productId)?.lot_tracking)}
+                          />
+                          {fieldErrors[`line_${index}_lotNumber`] ? (
+                            <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_lotNumber`]}</p>
+                          ) : null}
+                        </label>
+
+                        <label>
+                          <span className="ui-label">Vencimiento</span>
+                          <input
+                            name="item_expiry_date"
+                            className="ui-input mt-1"
+                            type="date"
+                            value={line.expiryDate}
+                            onChange={(e) => updateLine(index, { expiryDate: e.target.value })}
+                            required={Boolean(line.productId && productMap.get(line.productId)?.expiry_tracking)}
+                          />
+                          {fieldErrors[`line_${index}_expiryDate`] ? (
+                            <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_expiryDate`]}</p>
+                          ) : null}
+                        </label>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(240px,0.5fr)]">
+                      <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-950">
+                        <div className="font-semibold">Sin destino de inventario</div>
+                        <p className="mt-1 text-xs leading-5">
+                          Esta línea solo registra la compra y el precio. No crea stock, lote, vencimiento ni ubicación.
                         </p>
-                      </label>
-                    ) : (
-                      <div className="lg:col-span-2 rounded-2xl border border-[var(--ui-border)] bg-white px-4 py-3 text-xs text-[var(--ui-muted)]">
-                        Este LOC no tiene ubicaciones internas configuradas.
+                        <input type="hidden" name="item_location_id" value="" />
                         <input type="hidden" name="item_location_position_id" value="" />
+                        <input type="hidden" name="item_lot_number" value="" />
+                        <input type="hidden" name="item_expiry_date" value="" />
                       </div>
-                    )}
 
-                    <label>
-                      <span className="ui-label">Notas línea</span>
-                      <input
-                        name="item_notes"
-                        className="ui-input mt-1"
-                        placeholder="Opcional"
-                        value={line.notes}
-                        onChange={(e) => updateLine(index, { notes: e.target.value })}
-                      />
-                    </label>
-                  </div>
-
-                  <div className="mt-4 grid gap-3 md:grid-cols-2">
-                    <label>
-                      <span className="ui-label">Lote</span>
-                      <input
-                        name="item_lot_number"
-                        className="ui-input mt-1"
-                        placeholder={product?.lot_tracking ? "Obligatorio" : "Opcional"}
-                        value={line.lotNumber}
-                        onChange={(e) => updateLine(index, { lotNumber: e.target.value })}
-                        required={Boolean(line.productId && productMap.get(line.productId)?.lot_tracking)}
-                      />
-                      {fieldErrors[`line_${index}_lotNumber`] ? (
-                        <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_lotNumber`]}</p>
-                      ) : null}
-                    </label>
-
-                    <label>
-                      <span className="ui-label">Vencimiento</span>
-                      <input
-                        name="item_expiry_date"
-                        className="ui-input mt-1"
-                        type="date"
-                        value={line.expiryDate}
-                        onChange={(e) => updateLine(index, { expiryDate: e.target.value })}
-                        required={Boolean(line.productId && productMap.get(line.productId)?.expiry_tracking)}
-                      />
-                      {fieldErrors[`line_${index}_expiryDate`] ? (
-                        <p className="mt-1 text-xs text-rose-600">{fieldErrors[`line_${index}_expiryDate`]}</p>
-                      ) : null}
-                    </label>
-                  </div>
+                      <label>
+                        <span className="ui-label">Notas línea</span>
+                        <input
+                          name="item_notes"
+                          className="ui-input mt-1"
+                          placeholder="Opcional"
+                          value={line.notes}
+                          onChange={(e) => updateLine(index, { notes: e.target.value })}
+                        />
+                      </label>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -1975,9 +2168,13 @@ export function ReceiptForm({
 
       <aside className="min-w-0 2xl:sticky 2xl:top-28 2xl:max-h-[calc(100vh-8rem)] 2xl:self-start 2xl:overflow-y-auto">
         <div className="rounded-[1.75rem] border border-[var(--ui-border)] bg-white p-5 shadow-sm">
-          <div className="text-lg font-bold text-[var(--ui-text)]">Resumen de recepción</div>
+          <div className="text-lg font-bold text-[var(--ui-text)]">
+            {movesInventory ? "Resumen de recepción" : "Resumen de compra"}
+          </div>
           <p className="mt-1 text-sm text-[var(--ui-muted)]">
-            Verifica proveedor, líneas, impuestos y costo de inventario antes de registrar.
+            {movesInventory
+              ? "Verifica proveedor, líneas, impuestos y costo de inventario antes de registrar."
+              : "Verifica proveedor, líneas, impuestos y total de compra. El inventario no se modificará."}
           </p>
 
           <div className="mt-4 space-y-3">
@@ -1994,7 +2191,9 @@ export function ReceiptForm({
                 <div className="mt-1 text-2xl font-bold text-[var(--ui-text)]">{receiptTotals.validLines}</div>
               </div>
               <div className="rounded-2xl border border-[var(--ui-border)] bg-[var(--ui-surface-2)] p-3">
-                <div className="text-xs font-semibold uppercase tracking-wide text-[var(--ui-muted)]">Stock</div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-[var(--ui-muted)]">
+                  {movesInventory ? "Stock" : "Equivalencia"}
+                </div>
                 <div className="mt-1 text-sm font-bold text-[var(--ui-text)]">{formatQty(receiptTotals.stockQty)}</div>
               </div>
             </div>
@@ -2015,7 +2214,9 @@ export function ReceiptForm({
             </div>
 
             <div className="rounded-2xl border border-sky-200 bg-sky-50 p-3 text-xs leading-5 text-sky-950">
-              El costo promedio operativo se calcula con el valor neto. El bruto queda disponible para trazabilidad de factura.
+              {movesInventory
+                ? "El costo promedio operativo se calcula con el valor neto. El bruto queda disponible para trazabilidad de factura."
+                : "Se actualizará la referencia de precios por proveedor y presentación. No se recalculará el costo promedio del inventario existente."}
             </div>
 
             {masterDataRequests.length > 0 ? (
@@ -2045,9 +2246,9 @@ export function ReceiptForm({
               </div>
             ) : null}
 
-            {serverErrorMessage || clientSubmitError ? (
+            {serverErrorMessage ? (
               <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
-                {serverErrorMessage || clientSubmitError}
+                {serverErrorMessage}
               </div>
             ) : null}
 
@@ -2069,9 +2270,11 @@ export function ReceiptForm({
               </div>
             ) : null}
 
-            <button type="submit" className="ui-btn ui-btn--brand w-full" disabled={isSaving}>
-              {isSaving ? "Guardando..." : isCorrectionMode ? "Guardar corrección" : hasPendingMasterDataReview ? "Enviar recepción a revisión" : "Registrar recepción"}
-            </button>
+            <ReceiptSubmitButton
+              isCorrectionMode={isCorrectionMode}
+              hasPendingMasterDataReview={hasPendingMasterDataReview}
+              movesInventory={movesInventory}
+            />
 
             <button
               type="button"
@@ -2087,10 +2290,9 @@ export function ReceiptForm({
                 setReceivedAt("");
                 setEmergencyReason("");
                 setIsExceptionReceipt(false);
+                setOperationMode("inventory");
                 setMasterDataRequests([]);
                 setRequestDraft(null);
-                setIsSaving(false);
-                setClientSubmitError("");
               }}
             >
               Limpiar borrador
