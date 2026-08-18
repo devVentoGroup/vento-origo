@@ -809,18 +809,22 @@ export function ReceiptForm({
     window.sessionStorage.removeItem(storageKey);
     window.sessionStorage.removeItem(legacyStorageKey);
 
-    setSupplierId(prefillSupplierId);
-    setInvoiceNumber(prefillInvoiceNumber);
-    setNotes(prefillNotes);
-    setReceivedAt(prefillReceivedAt);
-    setEmergencyReason("");
-    setIsExceptionReceipt(false);
-    setOperationMode("inventory");
-    setActiveProductPickerIndex(null);
-    setLines(initialRows);
-    setFieldErrors({});
-    setRequestDraft(null);
-    setMasterDataRequests([]);
+    const resetTimer = window.setTimeout(() => {
+      setSupplierId(prefillSupplierId);
+      setInvoiceNumber(prefillInvoiceNumber);
+      setNotes(prefillNotes);
+      setReceivedAt(prefillReceivedAt);
+      setEmergencyReason("");
+      setIsExceptionReceipt(false);
+      setOperationMode("inventory");
+      setActiveProductPickerIndex(null);
+      setLines(initialRows);
+      setFieldErrors({});
+      setRequestDraft(null);
+      setMasterDataRequests([]);
+    }, 0);
+
+    return () => window.clearTimeout(resetTimer);
   }, [
     selectedPurchaseOrderId,
     isCorrectionMode,
@@ -852,18 +856,23 @@ export function ReceiptForm({
 
     window.sessionStorage.removeItem(storageKey);
     window.sessionStorage.removeItem(legacyStorageKey);
-    setSupplierId(selectedPurchaseOrderId ? prefillSupplierId : "");
-    setInvoiceNumber("");
-    setNotes("");
-    setReceivedAt(isCorrectionMode ? prefillReceivedAt : "");
-    setEmergencyReason("");
-    setIsExceptionReceipt(false);
-    setOperationMode("inventory");
-    setActiveProductPickerIndex(null);
-    setLines([makeEmptyLine(defaultLocationId)]);
-    setFieldErrors({});
-    setRequestDraft(null);
-    setMasterDataRequests([]);
+
+    const resetTimer = window.setTimeout(() => {
+      setSupplierId(selectedPurchaseOrderId ? prefillSupplierId : "");
+      setInvoiceNumber("");
+      setNotes("");
+      setReceivedAt(isCorrectionMode ? prefillReceivedAt : "");
+      setEmergencyReason("");
+      setIsExceptionReceipt(false);
+      setOperationMode("inventory");
+      setActiveProductPickerIndex(null);
+      setLines([makeEmptyLine(defaultLocationId)]);
+      setFieldErrors({});
+      setRequestDraft(null);
+      setMasterDataRequests([]);
+    }, 0);
+
+    return () => window.clearTimeout(resetTimer);
   }, [isCorrectionMode, legacyStorageKey, prefillReceivedAt, prefillRows, prefillSupplierId, selectedPurchaseOrderId, storageKey, submitSuccess]);
 
   useEffect(() => {
@@ -872,18 +881,23 @@ export function ReceiptForm({
     previousSiteIdRef.current = siteId;
     window.sessionStorage.removeItem(storageKey);
     window.sessionStorage.removeItem(legacyStorageKey);
-    setSupplierId("");
-    setInvoiceNumber("");
-    setNotes("");
-    setReceivedAt("");
-    setEmergencyReason("");
-    setIsExceptionReceipt(false);
-    setOperationMode("inventory");
-    setActiveProductPickerIndex(null);
-    setLines([makeEmptyLine(defaultLocationId)]);
-    setFieldErrors({});
-    setRequestDraft(null);
-    setMasterDataRequests([]);
+
+    const resetTimer = window.setTimeout(() => {
+      setSupplierId("");
+      setInvoiceNumber("");
+      setNotes("");
+      setReceivedAt("");
+      setEmergencyReason("");
+      setIsExceptionReceipt(false);
+      setOperationMode("inventory");
+      setActiveProductPickerIndex(null);
+      setLines([makeEmptyLine(defaultLocationId)]);
+      setFieldErrors({});
+      setRequestDraft(null);
+      setMasterDataRequests([]);
+    }, 0);
+
+    return () => window.clearTimeout(resetTimer);
   }, [legacyStorageKey, siteId, storageKey]);
 
   useEffect(() => {

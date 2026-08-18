@@ -358,23 +358,6 @@ function normalizeMasterDataRequestPayloads(formData: FormData): {
   return { requests, errorMessage: null };
 }
 
-function formatColombiaDateTime(value: string | null | undefined) {
-  if (!value) return "-";
-
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-
-  return new Intl.DateTimeFormat("es-CO", {
-    timeZone: "America/Bogota",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(date);
-}
-
 function asText(value: FormDataEntryValue | null) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -492,27 +475,6 @@ function buildNewReceiptUrl(params: {
   if (params.error) search.set("error", params.error);
   const qs = search.toString();
   return qs ? `/receipts/new?${qs}` : "/receipts/new";
-}
-
-function formatEntryStatus(status: string | null) {
-  switch (status) {
-    case "received":
-      return "Recibida";
-    case "reversed":
-      return "Reversada";
-    case "corrected":
-      return "Corregida";
-    case "pending_review":
-      return "En revisión";
-    case "recorded":
-      return "Compra registrada";
-    case "draft":
-      return "Borrador";
-    case "cancelled":
-      return "Cancelada";
-    default:
-      return status || "-";
-  }
 }
 
 function chunkArray<T>(items: T[], size: number): T[][] {
@@ -637,16 +599,16 @@ async function createReceipt(formData: FormData) {
 
   const canReceive = operationalSession.isSharedDevice
     ? await checkOperationalSessionPermission({
-        supabase,
-        session: operationalSession,
-        appId: APP_ID,
-        code: RECEIPTS_PERMISSION,
-      })
+      supabase,
+      session: operationalSession,
+      appId: APP_ID,
+      code: RECEIPTS_PERMISSION,
+    })
     : await supabase.rpc("has_permission", {
-        p_permission_code: "origo.procurement.receipts",
-        p_site_id: siteId,
-        p_area_id: null,
-      }).then((res) => !res.error && Boolean(res.data));
+      p_permission_code: "origo.procurement.receipts",
+      p_site_id: siteId,
+      p_area_id: null,
+    }).then((res) => !res.error && Boolean(res.data));
 
   if (!canReceive) {
     redirect(buildNewReceiptUrl({ siteId, draftId: draftId || undefined, error: "No tienes permiso para registrar recepciones." }));
@@ -914,11 +876,11 @@ async function createReceipt(formData: FormData) {
       const pendingRequestId = pendingMasterDataRequestIds[index] || "";
       const pendingPresentationRequest = pendingRequestId
         ? masterDataRequests.find(
-            (request) =>
-              request.kind === "new_presentation" &&
-              request.lineIndex === index &&
-              String(request.payload.id ?? "") === pendingRequestId
-          ) ?? null
+          (request) =>
+            request.kind === "new_presentation" &&
+            request.lineIndex === index &&
+            String(request.payload.id ?? "") === pendingRequestId
+        ) ?? null
         : pendingPresentationRequestByLineIndex.get(index) ?? null;
       const hasPendingPresentationRequest =
         Boolean(hasPendingMasterDataRequestValues[index]) && Boolean(pendingPresentationRequest);
@@ -1630,46 +1592,6 @@ async function createReceipt(formData: FormData) {
   }
 
   redirect(buildReceiptsUrl({ siteId, ok: correctionEntryId ? "corrected" : "created" }));
-}
-
-async function reverseReceipt(formData: FormData) {
-  "use server";
-
-  const supabase = await createClient();
-  const { data: userRes } = await supabase.auth.getUser();
-  const user = userRes.user ?? null;
-  if (!user) {
-    redirect("/login?returnTo=/receipts/new");
-  }
-
-  const entryId = asText(formData.get("entry_id"));
-  const siteId = asText(formData.get("site_id"));
-  const correctionComment = asText(formData.get("correction_comment"));
-
-  if (!entryId) {
-    redirect(buildReceiptsUrl({ siteId, error: "Recepción requerida para reversar." }));
-  }
-
-  if (!correctionComment) {
-    redirect(buildReceiptsUrl({ siteId, error: "El comentario de reversión es obligatorio." }));
-  }
-
-  const { error } = await supabase.rpc("origo_reverse_inventory_entry", {
-    p_entry_id: entryId,
-    p_comment: correctionComment,
-  });
-
-  if (error) {
-    const reversalError = error as ReversalRpcError;
-    redirect(
-      buildReceiptsUrl({
-        siteId,
-        error: reversalError.message ?? "No se pudo reversar la recepción.",
-      })
-    );
-  }
-
-  redirect(buildReceiptsUrl({ siteId, ok: "reversed" }));
 }
 
 export default async function ReceiptsPage({

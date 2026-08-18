@@ -346,6 +346,7 @@ async function loadReviewRequestOrRedirect(params: {
 
   return row;
 }
+
 async function fetchPendingEntryItems(params: {
   supabase: Awaited<ReturnType<typeof createClient>>;
   entryId: string;
@@ -423,7 +424,6 @@ async function applyApprovedPresentationToEntryItem(params: {
 
   if (error) buildErrorRedirect(error.message);
 }
-
 
 async function applyApprovedProductToEntryItem(params: {
   supabase: Awaited<ReturnType<typeof createClient>>;
@@ -869,8 +869,6 @@ export async function approvePresentationRequest(formData: FormData) {
   const inputUnitCode =
     String(request.input_unit_code ?? "").trim().toLowerCase() || normalizeUnitCode(inputUnitLabel || requestedLabel);
   const factor = parsePositiveNumber(request.conversion_factor_to_stock);
-  const stockUnitCode =
-    String(request.stock_unit_code ?? product.stock_unit_code ?? product.unit ?? "un").trim().toLowerCase() || "un";
 
   if (!requestedLabel) buildErrorRedirect("La solicitud no tiene nombre de presentación.");
   if (!inputUnitCode) buildErrorRedirect("La solicitud no tiene unidad de entrada válida.");

@@ -283,7 +283,6 @@ export default async function ReceiptsPage({
   }
 
   const activeSiteName = String(siteRow?.name ?? "Sede activa").trim();
-  const nowMs = Date.now();
   const newReceiptUrl = buildNewReceiptUrl(siteId, randomUUID());
 
   return (
@@ -384,7 +383,7 @@ export default async function ReceiptsPage({
             </thead>
             <tbody>
               {entryRows.map((entryRow) => {
-                const actionWindow = getReceiptActionWindowState(entryRow.created_at, nowMs);
+                const actionWindow = getReceiptActionWindowState(entryRow.created_at);
                 const canModify = entryRow.status === "received" && actionWindow.isOpen;
 
                 return (

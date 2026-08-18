@@ -158,7 +158,7 @@ function decodePngToRgb(
     if (offset + length + 4 > pngBytes.length) return null;
     const data = pngBytes.subarray(offset, offset + length);
     offset += length;
-    offset += 4; // crc
+    offset += 4;
 
     if (type === "IHDR") {
       width = readUint32BE(data, 0);
@@ -335,7 +335,6 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
     input.brand.headerColor ?? input.brand.primaryColor,
     [53, 190, 146]
   );
-  const softColor = parseHexColor(input.brand.softColor, [236, 255, 247]);
   const textColor = parseHexColor(input.brand.textColor, [11, 42, 31]);
   const mutedColor = parseHexColor(input.brand.mutedColor, [100, 116, 139]);
   const white: Rgb = [255, 255, 255];
@@ -379,15 +378,15 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
 
     commands.push(
       `${rgbToPdf(color)} rg\n` +
-        `${x.toFixed(2)} ${yBase.toFixed(2)} m\n` +
-        `${(x + w * 0.18).toFixed(2)} ${(yBase + 18).toFixed(2)} ${(x + w * 0.32).toFixed(2)} ${(yBase - 18).toFixed(
-          2
-        )} ${(x + w * 0.5).toFixed(2)} ${yBase.toFixed(2)} c\n` +
-        `${(x + w * 0.68).toFixed(2)} ${(yBase + 18).toFixed(2)} ${(x + w * 0.82).toFixed(2)} ${(yBase - 12).toFixed(
-          2
-        )} ${xEnd.toFixed(2)} ${yBase.toFixed(2)} c\n` +
-        `${xEnd.toFixed(2)} ${yBottom.toFixed(2)} l\n` +
-        `${x.toFixed(2)} ${yBottom.toFixed(2)} l\nh\nf`
+      `${x.toFixed(2)} ${yBase.toFixed(2)} m\n` +
+      `${(x + w * 0.18).toFixed(2)} ${(yBase + 18).toFixed(2)} ${(x + w * 0.32).toFixed(2)} ${(yBase - 18).toFixed(
+        2
+      )} ${(x + w * 0.5).toFixed(2)} ${yBase.toFixed(2)} c\n` +
+      `${(x + w * 0.68).toFixed(2)} ${(yBase + 18).toFixed(2)} ${(x + w * 0.82).toFixed(2)} ${(yBase - 12).toFixed(
+        2
+      )} ${xEnd.toFixed(2)} ${yBase.toFixed(2)} c\n` +
+      `${xEnd.toFixed(2)} ${yBottom.toFixed(2)} l\n` +
+      `${x.toFixed(2)} ${yBottom.toFixed(2)} l\nh\nf`
     );
   };
 
@@ -433,7 +432,6 @@ export function buildPurchaseOrderPdf(input: PurchaseOrderPdfInput): Uint8Array 
     const headerHeight = 126;
     const headerTop = 0;
     rect(0, headerTop, PAGE_WIDTH, headerHeight, "f", primaryColor);
-    // White wave "cuts" the green block to transition naturally into the white page.
     wave(0, headerTop + 94, PAGE_WIDTH, 32, white);
 
     const logoFrameSize = 64;
