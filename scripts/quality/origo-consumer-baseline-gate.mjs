@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 
 export const CI009_INSTANCE_ID = 'SHELL-CI-009::GLOBAL';
 export const CI009_SCHEMA_VERSION = 1;
-export const CONSUMER_REPOSITORY = 'devVentoGroup/vento-origo';
+export const CONSUMER_REPOSITORY = 'vento-group-sas/vento-origo';
 export const CONSUMER_NAME = 'vento-origo';
 export const CONTRACTUAL_TEST_COUNT = 42;
 
